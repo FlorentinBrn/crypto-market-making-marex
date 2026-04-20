@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from crypto_mm.storage import CsvAppendWriter, write_dataframe_like
+from crypto_mm.data.storage import CsvAppendWriter, write_dataframe_like
 
 
 def test_csv_writer_writes_header_and_rows(tmp_path: Path) -> None:

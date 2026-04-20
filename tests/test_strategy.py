@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
-from crypto_mm.models import Trade
-from crypto_mm.risk import RiskManager
-from crypto_mm.strategy import MarketMaker
+from crypto_mm.core.models import Trade
+from crypto_mm.core.risk import RiskManager
+from crypto_mm.core.strategy import MarketMaker
 
 
 def make_strategy() -> MarketMaker:

@@ -1,5 +1,5 @@
-from crypto_mm.analytics import SpreadTracker
-from crypto_mm.orderbook import OrderBook
+from crypto_mm.data.analytics import SpreadTracker
+from crypto_mm.core.orderbook import OrderBook
 
 
 def _make_book() -> OrderBook:

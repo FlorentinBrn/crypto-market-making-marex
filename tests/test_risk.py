@@ -1,4 +1,4 @@
-from crypto_mm.risk import RiskManager
+from crypto_mm.core.risk import RiskManager
 
 
 def _make_risk() -> RiskManager:

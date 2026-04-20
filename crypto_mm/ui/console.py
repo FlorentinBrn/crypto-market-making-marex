@@ -10,7 +10,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from .utils import format_local_time, local_now, parse_timestamp
+from ..core.utils import format_local_time, local_now, parse_timestamp
 
 
 # ---------------------------------------------------------------------

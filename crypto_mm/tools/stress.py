@@ -40,8 +40,8 @@ from typing import Callable, Iterable
 
 import pandas as pd
 
-from .config import Settings
-from .feed import CoinbaseMarketDataApp
+from ..ui.config import Settings
+from ..data.feed import CoinbaseMarketDataApp
 
 
 # ---------------------------------------------------------------------

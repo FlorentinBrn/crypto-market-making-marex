@@ -39,13 +39,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from .analytics import SpreadTracker
-from .config import Settings
-from .models import Trade
-from .orderbook import OrderBook
-from .risk import RiskManager
-from .strategy import MarketMaker
-from .utils import parse_timestamp
+from ..data.analytics import SpreadTracker
+from ..ui.config import Settings
+from ..core.models import Trade
+from ..core.orderbook import OrderBook
+from ..core.risk import RiskManager
+from ..core.strategy import MarketMaker
+from ..core.utils import parse_timestamp
 
 
 # =====================================================================
@@ -334,32 +334,27 @@ def _build_minute_equity_returns(curve: pd.DataFrame) -> tuple[pd.Series, float]
     return returns_per_min, observation_minutes
 
 
-def _safe_annualized_sharpe(
+def _annualized_sharpe_any_length(
     returns_per_period: pd.Series,
     periods_per_year: float,
-    min_points: int = 30,
-    min_nonzero_points: int = 10,
 ) -> float:
-    """Sharpe annualisé robuste.
+    """Sharpe annualisé calculable même sur petit échantillon.
 
-    Garde-fous :
-    - assez de points
-    - assez de returns non nuls
-    - volatilité non dégénérée
+    Retourne 0.0 si :
+    - moins de 2 points
+    - volatilité nulle ou quasi nulle
     """
-    if returns_per_period is None or len(returns_per_period) < min_points:
+    if returns_per_period is None:
         return 0.0
 
-    r = pd.Series(returns_per_period).replace([np.inf, -np.inf], np.nan).dropna()
-    if len(r) < min_points:
-        return 0.0
+    r = pd.Series(returns_per_period, dtype=float)
+    r = r.replace([np.inf, -np.inf], np.nan).dropna()
 
-    nonzero_points = int((r.abs() > 1e-15).sum())
-    if nonzero_points < min_nonzero_points:
+    if len(r) < 2:
         return 0.0
 
     mean_r = float(r.mean())
-    std_r = float(r.std(ddof=1))
+    std_r = float(r.std(ddof=0))
     if not np.isfinite(std_r) or std_r <= 1e-12:
         return 0.0
 
@@ -369,30 +364,36 @@ def _safe_annualized_sharpe(
     return float(sharpe)
 
 
-def _safe_annualized_sortino(
+def _annualized_sortino_any_length(
     returns_per_period: pd.Series,
     periods_per_year: float,
-    min_points: int = 30,
-    min_downside_points: int = 10,
+    target_return: float = 0.0,
 ) -> float:
-    """Sortino annualisé robuste."""
-    if returns_per_period is None or len(returns_per_period) < min_points:
+    """Sortino annualisé calculable même sur petit échantillon.
+
+    On utilise la downside deviation définie sur TOUS les points :
+        downside_dev = sqrt(mean(min(r - target, 0)^2))
+
+    Cela évite d'exiger un nombre minimal de returns négatifs.
+    """
+    if returns_per_period is None:
         return 0.0
 
-    r = pd.Series(returns_per_period).replace([np.inf, -np.inf], np.nan).dropna()
-    if len(r) < min_points:
+    r = pd.Series(returns_per_period, dtype=float)
+    r = r.replace([np.inf, -np.inf], np.nan).dropna()
+
+    if len(r) < 2:
         return 0.0
 
-    downside = r[r < 0]
-    if len(downside) < min_downside_points:
+    excess = r - target_return
+    downside = np.minimum(excess, 0.0)
+    downside_dev = float(np.sqrt(np.mean(np.square(downside))))
+
+    if not np.isfinite(downside_dev) or downside_dev <= 1e-12:
         return 0.0
 
-    mean_r = float(r.mean())
-    downside_std = float(downside.std(ddof=1))
-    if not np.isfinite(downside_std) or downside_std <= 1e-12:
-        return 0.0
-
-    sortino = mean_r / downside_std * math.sqrt(periods_per_year)
+    mean_excess = float(excess.mean())
+    sortino = mean_excess / downside_dev * math.sqrt(periods_per_year)
     if not np.isfinite(sortino):
         return 0.0
     return float(sortino)
@@ -431,6 +432,7 @@ def compute_risk_metrics(
         "observation_minutes": 0.0,
         "return_points": 0,
         "nonzero_return_points": 0,
+        "metrics_reliability": "none",
     }
     if curve.empty:
         return base
@@ -451,25 +453,17 @@ def compute_risk_metrics(
     # Crypto 24/7 : 525600 minutes par an.
     periods_per_year = 525600.0
 
-    # Si le backtest est très court,
-    # on préfère ne pas afficher de Sharpe annualisé interprétable.
-    enough_time_for_annualized_ratio = observation_minutes >= 60.0
+    # Calcul même sur petit fold.
+    sharpe = _annualized_sharpe_any_length(
+        returns_per_min,
+        periods_per_year=periods_per_year,
+    )
 
-    sharpe = 0.0
-    sortino = 0.0
-    if enough_time_for_annualized_ratio:
-        sharpe = _safe_annualized_sharpe(
-            returns_per_min,
-            periods_per_year=periods_per_year,
-            min_points=30,
-            min_nonzero_points=10,
-        )
-        sortino = _safe_annualized_sortino(
-            returns_per_min,
-            periods_per_year=periods_per_year,
-            min_points=30,
-            min_downside_points=10,
-        )
+    sortino = _annualized_sortino_any_length(
+        returns_per_min,
+        periods_per_year=periods_per_year,
+        target_return=0.0,
+    )
 
     calmar = 0.0
     if max_dd_pct < -1e-12:
@@ -493,6 +487,15 @@ def compute_risk_metrics(
 
     nonzero_return_points = int((returns_per_min.abs() > 1e-15).sum())
 
+    if len(returns_per_min) >= 60:
+        metrics_reliability = "high"
+    elif len(returns_per_min) >= 15:
+        metrics_reliability = "medium"
+    elif len(returns_per_min) >= 2:
+        metrics_reliability = "low"
+    else:
+        metrics_reliability = "none"
+
     return {
         "final_pnl": final_pnl,
         "total_return_pct": total_return_pct,
@@ -513,6 +516,7 @@ def compute_risk_metrics(
         "observation_minutes": observation_minutes,
         "return_points": int(len(returns_per_min)),
         "nonzero_return_points": nonzero_return_points,
+        "metrics_reliability": metrics_reliability,
     }
 
 
@@ -651,10 +655,11 @@ def walkforward_backtest(
             # Score de sélection plus robuste : on évite de sur-optimiser
             # un Sharpe absurde sur échantillon trop court.
             score = (
-                0.75 * m["sharpe_ratio"]
-                + 0.25 * m["sortino_ratio"]
-                - 0.15 * abs(m["max_drawdown_pct"])
-                + 0.01 * m["total_return_pct"]
+                0.35 * m["sharpe_ratio"]
+                + 0.15 * m["sortino_ratio"]
+                + 0.25 * m["total_return_pct"]
+                - 0.20 * abs(m["max_drawdown_pct"])
+                + 0.05 * m["fill_rate_pct"]
             )
             if score > best_score:
                 best_score = score

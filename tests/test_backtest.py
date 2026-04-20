@@ -3,14 +3,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from crypto_mm.backtest import (
+from crypto_mm.tools.backtest import (
     _read_csv,
     compute_risk_metrics,
     iter_replay_events,
     replay_with_book,
     walkforward_backtest,
 )
-from crypto_mm.config import Settings
+from crypto_mm.ui.config import Settings
 
 
 def _write_book_and_trades(tmp_path: Path) -> None:

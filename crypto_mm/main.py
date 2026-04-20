@@ -4,11 +4,11 @@ import argparse
 from pathlib import Path
 
 try:
-    from .config import Settings
-    from .feed import CoinbaseMarketDataApp
+    from .ui.config import Settings
+    from .data.feed import CoinbaseMarketDataApp
 except ImportError:
-    from crypto_mm.config import Settings
-    from crypto_mm.feed import CoinbaseMarketDataApp
+    from crypto_mm.ui.config import Settings
+    from crypto_mm.data.feed import CoinbaseMarketDataApp
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,8 +56,37 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Active la mesure de latence du chemin critique. "
             "Les mesures sont écrites dans data/bench/latency.csv. "
-            "À analyser ensuite avec : python -m crypto_mm.bench --data-dir data"
+            "À analyser ensuite avec : python -m crypto_mm.tools.bench --data-dir data"
         ),
+    )
+    parser.add_argument(
+        "--web-dashboard",
+        action="store_true",
+        help=(
+            "Lance le dashboard web Dash LIVE dans un thread daemon, "
+            "lisant directement la mémoire du feed (latence UI ~= 250 ms). "
+            "Accessible sur http://localhost:8050 par défaut."
+        ),
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=8050,
+        help="Port du dashboard web (défaut: 8050). Actif si --web-dashboard.",
+    )
+    parser.add_argument(
+        "--web-host",
+        default="127.0.0.1",
+        help=(
+            "Interface d'écoute du dashboard web (défaut: 127.0.0.1). "
+            "Utiliser 0.0.0.0 pour exposer sur le réseau local."
+        ),
+    )
+    parser.add_argument(
+        "--web-refresh-ms",
+        type=int,
+        default=250,
+        help="Intervalle de refresh du dashboard web en ms (défaut: 250).",
     )
     return parser
 
@@ -79,6 +108,24 @@ def main() -> None:
         settings.base_half_spread_bps = args.base_half_spread_bps
 
     app = CoinbaseMarketDataApp(settings)
+
+    # Dashboard web live (optionnel) : lance un serveur Dash dans un
+    # thread daemon qui lit la mémoire de `app`. Latence UI ~250 ms.
+    if args.web_dashboard:
+        # Import tardif pour ne pas imposer la dep Dash si non utilisée.
+        from .ui.dash_app import run_live_server_threaded
+
+        print(
+            f"[dashboard] Web dashboard live : "
+            f"http://{args.web_host}:{args.web_port}  (refresh {args.web_refresh_ms} ms)"
+        )
+        run_live_server_threaded(
+            app,
+            host=args.web_host,
+            port=args.web_port,
+            refresh_ms=args.web_refresh_ms,
+        )
+
     app.run()
 
 

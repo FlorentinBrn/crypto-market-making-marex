@@ -1,13 +1,14 @@
-"""Crypto MM Exercise — simulateur de market making BTC-USD sur Coinbase.
+"""Crypto MM — Market making research sandbox for Coinbase BTC-USD.
 
-Modules principaux :
-- orderbook  : carnet niveau 2, microprice, imbalance, OFI
-- analytics  : spread tracker + signaux microstructure (OFI, VPIN, flow)
-- strategy   : MarketMaker (quoting, skew, fill sim)
-- risk       : RiskManager (kill switch, reduce-only, health score)
-- learning   : ContextualBanditQuoter (RL optionnel)
-- feed       : application principale (websocket + CSV)
-- backtest   : walk-forward offline
-- analyze    : reconstruction P&L post-run depuis les fills CSV
+Structure du package :
+
+- ``crypto_mm.core``    — domaine pur (OrderBook, MarketMaker, RiskManager, ...)
+- ``crypto_mm.data``    — I/O : feed WebSocket, persistance CSV, replay, analytics
+- ``crypto_mm.tools``   — outils CLI : backtest, bench, stress, analyze, clean, plots
+- ``crypto_mm.ui``      — interfaces : config, console Rich, dashboard Dash
+- ``crypto_mm.main``    — entry point CLI du run live
+
+Pour les usages courants, les symboles principaux sont réexposés depuis
+leurs sous-packages respectifs (cf. ``from crypto_mm.core import ...``).
 """
-__version__ = "2.0.0"
+__version__ = "2.1.0"

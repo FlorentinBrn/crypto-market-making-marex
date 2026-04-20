@@ -1,6 +1,6 @@
 from datetime import timezone
 
-from crypto_mm.utils import format_local_time, parse_timestamp, utc_now
+from crypto_mm.core.utils import format_local_time, parse_timestamp, utc_now
 
 
 def test_parse_timestamp_none_returns_utc_now() -> None:

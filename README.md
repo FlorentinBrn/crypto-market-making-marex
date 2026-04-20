@@ -6,9 +6,43 @@
 
 A **crypto market making research sandbox** built around **Coinbase BTC-USD public market data**.
 
-This repository is designed as a minimal but credible quant trading project: it maintains a local level-2 order book, computes microstructure features in real time, runs an inventory-aware quoting engine, simulates fills from public trades, and supports **historical replay, stress testing, and walk-forward evaluation workflows**.
+This repository maintains a local level-2 order book, computes microstructure features in real time, runs an inventory-aware quoting engine, simulates fills from public trades, and supports **historical replay, stress testing, and walk-forward evaluation workflows**.
 
-It is positioned between an interview exercise and a research prototype: the codebase aims to be readable, testable, and extensible rather than overly optimized or exchange-specific.
+The codebase aims to be readable, testable, and extensible rather than overly optimized or exchange-specific.
+
+---
+
+## Screenshots & Outputs
+
+### Live terminal dashboard (Rich)
+
+![Terminal dashboard](docs/images/terminal_dashboard.png)
+
+*The Rich-based dashboard shown in the terminal during a live run. Displays the top of book, effective spreads per clip size, portfolio state, risk metrics, recent trades, and simulated fills — all refreshing every 100 ms.*
+
+### Web dashboard (Dash)
+
+![Dash web dashboard](docs/images/dash_dashboard.png)
+
+*The Dash-based web dashboard at `http://localhost:8050`. Two modes are supported: **live** (started with `--web-dashboard` alongside the live feed, reads feed memory directly, ~100 ms UI latency) and **offline** (standalone, reads CSV files). Renders P&L (realized + unrealized), position, microstructure signals, spread dynamics, order book depth, and recent fills.*
+
+### Backtest walk-forward results
+
+![Walk-forward results](docs/images/walkforward_results.png)
+
+*Metrics per fold from `python -m crypto_mm.tools.backtest`: final P&L, Sharpe, Sortino, Calmar, fill rate, hit ratio, inventory standard deviation, time-in-loss, reduce-only activation rate.*
+
+### Stress scenarios summary
+
+![Stress tests](docs/images/stress_summary.png)
+
+*Output of `python -m crypto_mm.tools.stress` — five adversarial scenarios (stable, flash crash, liquidity drought, VPIN burst, oscillation) with invariant checks (notional cap, max loss, kill switch, health score bounds).*
+
+### Latency profile
+
+![Latency distributions](docs/images/latency_distributions.png)
+
+*Per-stage latency distribution from the `--bench-latency` flag: parse JSON, apply book updates, compute signals, update quotes, on_trade, render dashboard, total L2 handler, total trade handler.*
 
 ---
 
@@ -19,25 +53,14 @@ It is positioned between an interview exercise and a research prototype: the cod
 - **Microstructure features** including imbalance, OFI, microprice, VPIN proxy, and fast volatility
 - **Inventory-aware market making logic** with adaptive spread control
 - **Execution simulation layer** using queue-share heuristics on public trades
-- **Risk controls** including kill switch, inventory limits, and reduce-only mode
+- **Risk controls** including kill switch, inventory limits, reduce-only mode, health score
+- **Dual dashboards**: Rich-based terminal UI and Dash-based web UI
 - **Historical replay engine** for deterministic offline experiments
-- **Stress testing framework** for spread shocks, volatility bursts, toxic flow, and inventory pressure
-- **Walk-forward backtesting** for realistic offline evaluation on stored data
+- **Stress testing framework** with adversarial scenarios and invariant checks
+- **Walk-forward backtesting** with a full risk metrics panel
+- **Latency profiling** along the critical message-handling path
 - **Analytics and diagnostics** exported to CSV and plots
-- **Terminal monitoring tools** for observing behavior during runs
 - **Strong test coverage** with a lightweight and reproducible local setup
-
----
-
-## Why this repository is interesting
-
-This project combines:
-
-1. **Market data engineering**: websocket ingestion, state updates, persistence  
-2. **Microstructure-driven signals**: order flow and short-term pressure indicators  
-3. **Execution logic**: fill simulation and quote placement rules  
-4. **Risk management**: inventory and kill-switch safeguards  
-5. **Research workflow**: replay, stress tests, backtest, analytics, diagnostics  
 
 ---
 
@@ -45,28 +68,33 @@ This project combines:
 
 ```text
 crypto_mm/
-├── analytics.py        # performance metrics and reporting helpers
-├── analyze.py          # post-run analytics entrypoint
-├── backtest.py         # historical replay and walk-forward evaluation
-├── bench.py            # latency and local performance utilities
-├── clean.py            # remove generated data and cache folders
-├── config.py           # model and runtime configuration
-├── console.py          # terminal monitoring tools
-├── feed.py             # websocket ingestion and market data feed
-├── learning.py         # adaptive / learning-based components
-├── main.py             # live simulation entrypoint
-├── models.py           # core dataclasses / state containers
-├── orderbook.py        # local order book reconstruction
-├── plots.py            # chart generation utilities
-├── replay.py           # historical data replay helpers
-├── risk.py             # inventory and risk controls
-├── storage.py          # CSV persistence layer
-├── strategy.py         # quoting and spread logic
-├── stress.py           # scenario stress testing engine
-└── utils.py            # shared helpers
+├── main.py                 # live simulation entrypoint (CLI)
+├── core/                   # pure-domain layer, no I/O
+│   ├── models.py           # dataclasses : Trade, Quote, Fill
+│   ├── orderbook.py        # L2 order book with caching (SortedDict)
+│   ├── strategy.py         # MarketMaker quoting engine
+│   ├── risk.py             # RiskManager : kill switch, reduce-only, health score
+│   ├── learning.py         # optional contextual bandit
+│   └── utils.py            # time helpers
+├── data/                   # I/O : feed, storage, replay, analytics
+│   ├── feed.py             # CoinbaseMarketDataApp (websocket runner)
+│   ├── storage.py          # async CSV writer (thread-backed queue)
+│   ├── replay.py           # deterministic CSV replay
+│   └── analytics.py        # SpreadTracker + microstructure signals
+├── tools/                  # CLI tools
+│   ├── backtest.py         # walk-forward with book reconstruction
+│   ├── bench.py            # latency recorder + analysis CLI
+│   ├── stress.py           # adversarial scenarios + invariants
+│   ├── analyze.py          # post-run P&L reconstruction from fills
+│   ├── plots.py            # matplotlib charts
+│   └── clean.py            # remove generated artifacts
+└── ui/                     # user interfaces
+    ├── config.py           # centralized Settings dataclass
+    ├── console.py          # Rich terminal dashboard
+    └── dash_app.py         # Dash web dashboard
 
-tests/
-└── ...                 # unit tests for core modules
+tests/                      # unit tests (58 tests)
+docs/images/                # screenshots referenced in README
 ```
 
 ---
@@ -77,125 +105,139 @@ tests/
 
 ```bash
 git clone https://github.com/FlorentinBrn/crypto-market-making-marex.git
-cd crypto_mm_exercise
+cd Marex_MM
 ```
 
 ### 2) Create an environment
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
-```
-
-On Windows:
-
-```bash
-.venv\Scripts\activate
+source .venv/bin/activate          # macOS / Linux
+# .venv\Scripts\activate           # Windows
 ```
 
 ### 3) Install dependencies
 
 ```bash
 pip install -r requirements.txt
-```
-
-or in editable mode:
-
-```bash
+# or in editable mode:
 pip install -e .
 ```
+
+Python 3.10 or newer.
 
 ---
 
 ## Quick Start
 
-### Live simulation
+### Live simulation (Rich terminal dashboard)
 
 ```bash
 python -m crypto_mm.main
 ```
 
-### Live simulation with adaptive module enabled
+### Live simulation with optional adaptive module (contextual bandit)
 
 ```bash
 python -m crypto_mm.main --enable-bandit
 ```
 
-### Live simulation with adaptive module enabled
+### Live simulation with latency instrumentation
 
 ```bash
 python -m crypto_mm.main --bench-latency
 ```
 
+### Web dashboard (Dash)
+
+The web dashboard supports **two modes**:
+
+**Live mode** (recommended for active monitoring — ~100 ms UI latency, reads feed memory directly):
+
+```bash
+python -m crypto_mm.main --web-dashboard
+# Then open http://localhost:8050
+```
+
+Optional flags: `--web-port 9000`, `--web-host 0.0.0.0`, `--web-refresh-ms 200`.
+
+**Offline mode** (for completed runs, or when feed and dashboard run in separate processes):
+
+```bash
+# In terminal 1 (or on a completed run):
+python -m crypto_mm.main
+
+# In terminal 2:
+python -m crypto_mm.ui.dash_app --data-dir data
+# Then open http://localhost:8050
+```
+
+Offline mode reads the CSV files and refreshes every 1 s by default.
+
 ### Run backtests on stored data
 
 ```bash
-python -m crypto_mm.backtest --data-dir data
+python -m crypto_mm.tools.backtest --data-dir data --n-folds 3
 ```
 
 ### Replay historical sessions
 
 ```bash
-python -m crypto_mm.replay --data-dir data --speed 10
+python -m crypto_mm.data.replay --data-dir data --speed 10
+python -m crypto_mm.data.replay --data-dir data --speed inf --bench-latency
 ```
 
 ### Run stress scenarios
 
 ```bash
-python -m crypto_mm.stress
+python -m crypto_mm.tools.stress
+python -m crypto_mm.tools.stress --scenario flash_crash
 ```
 
-### Run latency analysis
+### Latency analysis (post-run)
 
 ```bash
-python -m crypto_mm.bench --data-dir data
+python -m crypto_mm.tools.bench --data-dir data
 ```
 
-### Run post-trade analytics
+### Post-trade analytics
 
 ```bash
-python -m crypto_mm.analyze
+python -m crypto_mm.tools.analyze --data-dir data
 ```
 
 ### Clean generated data and cache folders
 
 ```bash
-python -m crypto_mm.clean
-```
-
-or through the installed console script:
-
-```bash
+python -m crypto_mm.tools.clean
+# or the installed console script:
 crypto-mm-clean
 ```
-
-This command removes generated local folders such as `data/`, `.pytest_cache/`, and nested `__pycache__/` directories.
 
 ---
 
 ## Testing
 
-The repository ships with a test suite covering the main building blocks.
-
 ```bash
 pytest -q
 ```
 
-Current local status on the packaged version: **58 tests passed**.
+Current status: **58 tests passed**.
 
 ---
 
 ## Research Workflow
 
-A typical workflow with this repository is:
+A typical workflow with this repository:
 
 1. **Collect or replay market data**
 2. **Run the quoting engine** with a chosen configuration
 3. **Store fills, state, spreads, and PnL paths**
-4. **Replay sessions deterministically** to inspect behavior
-5. **Stress the strategy** under adverse scenarios
-6. **Analyze outcomes** through CSV exports and plots
-7. **Tune parameters** using walk-forward evaluation
+4. **Watch the live dashboards** (terminal and/or web)
+5. **Replay sessions deterministically** to inspect behavior
+6. **Stress the strategy** under adverse scenarios
+7. **Analyze outcomes** through CSV exports and plots
+8. **Tune parameters** using walk-forward evaluation
 
 This makes the project suitable for experimenting with:
 
@@ -213,14 +255,13 @@ This makes the project suitable for experimenting with:
 
 Example scenarios that can be simulated:
 
-- sudden volatility expansion
-- one-sided aggressive flow
-- widening spreads / thin liquidity
-- persistent trend regime
-- inventory trapped near limits
-- degraded fills or delayed executions
+- **flash_crash** — sudden -500 bps drop in 2 s with partial rebound
+- **liquidity_drought** — bid side nearly disappears for several seconds
+- **vpin_burst** — 100% one-sided aggressor flow
+- **oscillation** — high-frequency sinusoidal volatility
+- **stable** — calm baseline for comparison
 
-This is useful to evaluate whether a profitable strategy remains robust when market conditions deteriorate.
+Each scenario checks: notional cap ≤ $1M, drawdown ≤ $100k, kill-switch activation, health score in [0, 100].
 
 ---
 
@@ -230,7 +271,7 @@ Historical replay allows:
 
 - deterministic debugging
 - side-by-side parameter comparison
-- reproducible PnL analysis
+- reproducible P&L analysis
 - quote behavior inspection
 - signal validation on past sessions
 
@@ -240,9 +281,9 @@ Replay is often the fastest path to improving execution logic before testing liv
 
 ## Example Outputs
 
-The project can generate artifacts such as:
+The project can generate:
 
-- PnL curves from simulated fills
+- P&L curves from simulated fills
 - spread history charts
 - walk-forward equity curves
 - stress scenario comparisons
@@ -250,21 +291,19 @@ The project can generate artifacts such as:
 - replay diagnostics
 - microstructure state histories
 
-These outputs are useful both for debugging and for presenting research results.
-
 ---
 
 ## Engineering Notes
 
 The codebase favors:
 
-- explicit module boundaries
+- explicit module boundaries (`core` / `data` / `tools` / `ui`)
 - simple dependencies
-- testable components
+- testable components (pure `core` has no I/O, no network)
 - local reproducibility
 - readable implementation over unnecessary abstraction
 
-This is deliberate. In a trading context, clarity and debuggability are often more valuable than cleverness.
+In a trading context, clarity and debuggability are often more valuable than cleverness.
 
 ---
 
@@ -291,3 +330,5 @@ In particular, it does **not** claim to provide:
 - more realistic event-driven replay engine
 - Monte Carlo stress scenario generator
 - experiment tracking for parameter sweeps
+- WebSocket auto-reconnect with gap replay
+- Prometheus metrics endpoint

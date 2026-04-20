@@ -1,4 +1,4 @@
-from crypto_mm.orderbook import OrderBook
+from crypto_mm.core.orderbook import OrderBook
 
 
 def _build_book() -> OrderBook:

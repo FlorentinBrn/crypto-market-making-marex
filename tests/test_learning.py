@@ -1,4 +1,4 @@
-from crypto_mm.learning import ContextualBanditQuoter
+from crypto_mm.core.learning import ContextualBanditQuoter
 
 
 def test_bandit_learns_positive_reward_on_single_arm() -> None:

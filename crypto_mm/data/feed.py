@@ -117,13 +117,12 @@ class CoinbaseMarketDataApp:
         self.trades_processed = 0
         self.last_message_time: float | None = None
 
-        # Throttle de l'écriture d'état (state.csv + pnl.csv) — écrire à
-        # chaque message L2 explose le volume disque alors que ces lignes
-        # ne sont utiles que périodiquement.
+        # Throttle des écritures d'état (state.csv et pnl.csv) : une ligne
+        # par message L2 saturerait le disque, une cadence périodique suffit.
         self._last_state_write_ms: float = 0.0
         self._state_write_min_interval_ms: float = 100.0
 
-        # Bench de latence : activé via Settings.bench_latency.
+        # Instrumentation de latence (optionnelle, cf. Settings.bench_latency).
         self.latency_recorder = LatencyRecorder(enabled=settings.bench_latency)
         self._bench_flush_every_n: int = 5_000
         self._bench_msg_since_flush: int = 0

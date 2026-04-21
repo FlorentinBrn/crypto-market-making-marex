@@ -6,11 +6,7 @@ from pathlib import Path
 
 @dataclass(slots=True)
 class Settings:
-    """Configuration centralisée de l'application.
-
-    Tous les paramètres ajustables sont ici. Les commentaires sont en
-    français, conformément à la convention du projet.
-    """
+    """Configuration centralisée de l'application."""
 
     # --------------------------------------------------------------
     # Flux de données
@@ -19,8 +15,7 @@ class Settings:
     ws_url: str = "wss://advanced-trade-ws.coinbase.com"
 
     # --------------------------------------------------------------
-    # Quoting — paramètres pour maximiser les fills tout en
-    # préservant le contrôle du risque.
+    # Quoting
     # --------------------------------------------------------------
     quote_size_btc: float = 0.10
     min_quote_size_btc: float = 0.02
@@ -39,36 +34,34 @@ class Settings:
     ewma_spread_alpha: float = 0.08
 
     # --------------------------------------------------------------
-    # Signaux microstructure
+    # Signaux de microstructure
     # --------------------------------------------------------------
     microprice_weight: float = 0.85
     imbalance_shift_bps: float = 3.0
     imbalance_widening_bps: float = 1.5
 
-    # Nouveaux signaux (OFI, trade-flow, VPIN, fast vol, signal combiné)
     ofi_ewma_alpha: float = 0.15
     trade_flow_window_ms: int = 4_000
     vpin_bucket_size_btc: float = 0.5
     vpin_history_size: int = 50
     fast_vol_alpha: float = 0.10
 
-    # Poids du signal combiné dans la stratégie
     combined_signal_weight: float = 1.0
 
-    # Élargissement de spread en cas de toxicité (VPIN) élevée ; exprimé en
-    # bps additionnels par unité de VPIN au-dessus du seuil de référence.
+    # Élargissement du spread en cas de toxicité élevée (VPIN). Exprimé
+    # en bps additionnels par unité de VPIN au-dessus du seuil de référence.
     vpin_reference: float = 0.25
     vpin_widening_bps_per_unit: float = 4.0
 
-    # Élargissement de spread en cas de vol rapide élevée.
+    # Élargissement du spread en cas de volatilité rapide élevée.
     fast_vol_widening_coef: float = 0.5
 
-    # Pousse à faire un pas de quote plus agressif quand OFI EWMA est
-    # favorable à notre côté.
+    # Seuil d'OFI EWMA au-delà duquel la stratégie peut rejoindre
+    # agressivement le touch du côté favorable.
     ofi_aggressive_join_threshold: float = 15.0
 
     # --------------------------------------------------------------
-    # Reinforcement learning (OPTIONNEL - désactivé par défaut)
+    # Reinforcement learning (optionnel, désactivé par défaut)
     # --------------------------------------------------------------
     use_contextual_bandit: bool = False
 
@@ -82,7 +75,7 @@ class Settings:
     max_loss_usd: float = 100_000.0
 
     # --------------------------------------------------------------
-    # Dashboard / rendu
+    # Dashboard
     # --------------------------------------------------------------
     top_levels_to_display: int = 8
     recent_trades_to_display: int = 20
@@ -98,6 +91,6 @@ class Settings:
     output_dir: Path = field(default_factory=lambda: Path("data"))
 
     # --------------------------------------------------------------
-    # Bench — mesures de latence par étape du chemin critique
+    # Instrumentation de latence
     # --------------------------------------------------------------
     bench_latency: bool = False

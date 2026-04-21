@@ -15,15 +15,16 @@ class BanditDecision:
 
 
 class ContextualBanditQuoter:
-    """Petit moteur de reinforcement learning **optionnel**.
+    """Moteur de reinforcement learning optionnel.
 
-    Désactivé par défaut dans la config (cf. `Settings.use_contextual_bandit`).
-    On reste simple et robuste : bandit contextuel epsilon-greedy + UCB
-    qui choisit un couple (multiplicateur de spread, multiplicateur de
-    taille) selon l'état microstructure/risk courant.
+    Désactivé par défaut (cf. ``Settings.use_contextual_bandit``). Il
+    s'agit d'un bandit contextuel epsilon-greedy avec bonus UCB qui
+    choisit à chaque décision un couple (multiplicateur de spread,
+    multiplicateur de taille) en fonction de l'état courant de
+    microstructure et de risque.
 
-    La récompense est la variation d'equity entre deux décisions, pénalisée
-    par la taille d'inventaire (on ne veut pas qu'il apprenne à accumuler).
+    La récompense est la variation d'equity entre deux décisions,
+    pénalisée par la taille d'inventaire afin d'éviter l'accumulation.
     """
 
     def __init__(

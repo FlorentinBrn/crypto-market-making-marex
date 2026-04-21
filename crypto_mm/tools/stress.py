@@ -1,30 +1,23 @@
-"""Stress tests adverses — vérifie que les contraintes de risque tiennent
-sous conditions extrêmes.
+"""Stress tests : vérification des contraintes de risque sous conditions extrêmes.
 
-Les scénarios génèrent des événements synthétiques (book + trades) au
-format Coinbase, qui sont ensuite injectés dans `CoinbaseMarketDataApp`
-via le même chemin que le replayer. À la fin, on vérifie une série
-d'invariants :
+Chaque scénario génère des événements synthétiques (carnet et trades) au
+format Coinbase, qui sont injectés dans ``CoinbaseMarketDataApp`` via le
+même chemin que le replayer. Après exécution, les invariants suivants
+sont vérifiés :
 
 1. La position notionnelle ne dépasse jamais $1,000,000.
 2. Le drawdown maximal reste strictement sous $100,000.
-3. Le kill switch se déclenche si jamais la limite est atteinte.
-4. `reduce_only` s'active sous stress (loss_util ≥ 0.75 ou expo ≥ 0.85).
-5. `health_score` reste entre 0 et 100.
+3. Le kill switch se déclenche si la limite est atteinte.
+4. Le mode reduce-only s'active sous stress.
+5. Le health score reste dans l'intervalle [0, 100].
 
 Scénarios inclus :
-- **flash_crash** : chute brutale de 500 bps en 2 secondes avec rebond
-- **liquidity_drought** : disparition quasi-totale de la liquidité bid
-- **vpin_burst** : flux massivement unidirectionnel (trades toxiques)
-- **oscillation** : marché rapidement oscillant haute volatilité
-- **stable** : scénario témoin, marché calme (pour baseline)
 
-Usage :
-```bash
-python -m crypto_mm.stress                           # tous les scénarios
-python -m crypto_mm.stress --scenario flash_crash    # un seul
-python -m crypto_mm.stress --output-dir data/stress  # output custom
-```
+- ``stable`` : marché calme (référence).
+- ``flash_crash`` : chute brutale de 500 bps en 2 secondes avec rebond.
+- ``liquidity_drought`` : disparition quasi-totale de la liquidité bid.
+- ``vpin_burst`` : flux massivement unidirectionnel.
+- ``oscillation`` : marché très volatile en haute fréquence.
 """
 
 from __future__ import annotations

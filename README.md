@@ -30,7 +30,7 @@ The codebase aims to be readable, testable, and extensible rather than overly op
 
 ![Walk-forward results](docs/images/walkforward_results.png)
 
-*Metrics per fold from `python -m crypto_mm.tools.backtest`: final P&L, Sharpe, Sortino, Calmar, fill rate, hit ratio, inventory standard deviation, time-in-loss, reduce-only activation rate.*
+*Metrics per fold from `python -m crypto_mm.tools.backtest`: final P&L, max drawdown, Calmar, fill rate (real vs naive), queue drag, average edge in bps, weighted edge in bps, spread captured in USD, average holding time, P&L per round-trip, inventory turnover.*
 
 ### Stress scenarios summary
 

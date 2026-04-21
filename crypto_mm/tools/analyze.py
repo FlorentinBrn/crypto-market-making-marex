@@ -1,11 +1,5 @@
-"""Analyse post-run : reconstruit le P&L depuis les fills CSV.
-
-Permet aussi de tracer la courbe de spread à partir de spread_history.csv.
-
-Usage :
-    python -m crypto_mm.analyze --data-dir data
-    python -m crypto_mm.analyze --fills data/simulation/fills.csv \
-        --spreads data/analytics/spread_history.csv
+"""Analyse post-run : reconstruit le P&L depuis les fills CSV et trace
+la courbe de spread à partir de ``spread_history.csv``.
 """
 
 from __future__ import annotations

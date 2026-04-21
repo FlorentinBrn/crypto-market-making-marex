@@ -100,16 +100,18 @@ def test_replay_with_book_produces_curve_and_metrics(tmp_path: Path) -> None:
         "total_return_pct",
         "max_drawdown_usd",
         "max_drawdown_pct",
-        "sharpe_ratio",
-        "sortino_ratio",
         "calmar_ratio",
         "fills",
         "fill_rate_pct",
-        "hit_ratio_pct",
         "avg_pnl_per_fill",
         "inventory_std_btc",
         "time_in_loss_pct",
         "reduce_only_pct",
+        "avg_edge_bps",
+        "edge_weighted_bps",
+        "spread_captured_usd",
+        "round_trips",
+        "realized_per_round_trip_usd",
     }
     assert expected_keys.issubset(set(metrics.keys()))
 

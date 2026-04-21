@@ -4,11 +4,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    # Pour les annotations, on déclare SortedDict comme dict[float, float].
-    # Les types génériques de sortedcontainers ne sont pas toujours bien
-    # compris par les checkers ; dict[float, float] suffit à Pylance et
+    # Alias de type : les annotations génériques de sortedcontainers
+    # ne sont pas reconnues par tous les checkers, ``dict[float, float]``
     # reflète fidèlement le contenu.
-    SortedDict = dict  # alias de type
+    SortedDict = dict
 
 try:
     from sortedcontainers import SortedDict as _SortedDictImpl  # type: ignore

@@ -1,25 +1,15 @@
-"""Replayer standalone — rejoue un run CSV à vitesse variable.
+"""Replayer : rejoue un run CSV à vitesse variable.
 
-Architecture :
-- Lit `raw/book.csv` et `raw/trades.csv` d'un run précédent,
-- Les merge en ordre chronologique,
-- Les réinjecte dans `CoinbaseMarketDataApp` comme s'ils venaient du
-  websocket, en reconstituant le format JSON Coinbase Advanced Trade.
-- La vitesse est contrôlée par `--speed` : 1.0 = temps réel, 10.0 = 10x
-  plus rapide, 0.5 = demi-vitesse, `inf` = aussi vite que possible.
+Lit ``raw/book.csv`` et ``raw/trades.csv`` d'un run précédent, les merge
+en ordre chronologique et les réinjecte dans ``CoinbaseMarketDataApp``
+en reconstituant le format JSON de Coinbase Advanced Trade.
 
-Usage :
-```bash
-python -m crypto_mm.data.replay --data-dir data --speed 10
-python -m crypto_mm.data.replay --data-dir data --speed inf --no-console
-python -m crypto_mm.data.replay --data-dir data --bench-latency
-```
+La vitesse est contrôlée par ``--speed`` : ``1.0`` pour temps réel,
+``10`` pour dix fois plus rapide, ``inf`` pour aussi vite que possible.
 
-Intérêts :
-- Itérer sur la stratégie sans attendre un flux live ;
-- Reproduire exactement un moment problématique (ex : pic de vol d'hier)
-- Profiler la latence sur un dataset stable (comparable avant/après une
-  optimisation).
+Utile pour itérer sur la stratégie sans attendre un flux live, rejouer
+un événement passé à l'identique, ou profiler la latence sur un dataset
+stable.
 """
 
 from __future__ import annotations

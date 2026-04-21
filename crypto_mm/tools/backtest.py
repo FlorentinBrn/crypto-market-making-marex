@@ -2,26 +2,18 @@
 
 Ce module :
 
-1. Reconstruit dynamiquement un OrderBook au cours du replay à partir des
-   snapshots `raw/book.csv` (top N niveaux par timestamp),
-2. Rejoue les trades `raw/trades.csv` dans l'ordre chronologique, en les
-   interleavant avec les mises à jour du carnet,
-3. Calcule les signaux microstructure (OFI, VPIN, trade-flow) en direct,
-4. Produit un panel complet de métriques de risque pour la stratégie.
-
-Métriques produites :
-- final_pnl (USD)
-- total_return (%)
-- max_drawdown (USD et %)
-- sharpe_ratio (annualisé, returns par minute)
-- sortino_ratio (annualisé)
-- calmar_ratio
-- fills, fill_rate (fills / trades rencontrés éligibles)
-- hit_ratio (% de fills profitables sur clôture)
-- avg_pnl_per_fill
-- inventory_std (volatilité de la position BTC)
-- time_in_loss_pct (% du temps en drawdown)
-- reduce_only_activation_pct
+1. Reconstruit dynamiquement un OrderBook à partir des snapshots de
+   `raw/book.csv` (top N niveaux par timestamp).
+2. Rejoue les trades de `raw/trades.csv` dans l'ordre chronologique en
+   les interleavant avec les mises à jour du carnet.
+3. Calcule les signaux de microstructure (OFI, VPIN, trade-flow) en
+   direct.
+4. Simule les fills avec un modèle de file d'attente réaliste
+   (cf. `fill_model.QueuePositionTracker`).
+5. Produit des métriques de performance et de market making :
+   P&L final, drawdown maximum, Calmar, fill rate réel vs naïf,
+   queue drag, edge moyen et pondéré, spread capturé, temps de
+   détention moyen, P&L par round-trip, turnover.
 """
 
 from __future__ import annotations
@@ -46,6 +38,7 @@ from ..core.orderbook import OrderBook
 from ..core.risk import RiskManager
 from ..core.strategy import MarketMaker
 from ..core.utils import parse_timestamp
+from .fill_model import QueuePositionTracker
 
 
 # =====================================================================
@@ -179,6 +172,11 @@ def replay_with_book(
 ) -> tuple[pd.DataFrame, dict]:
     """Rejoue les événements (book + trades) en reconstruisant le carnet.
 
+    Le modèle de fill utilise un ``QueuePositionTracker`` pour être plus
+    réaliste que la simulation live : un trade consomme d'abord la file
+    d'attente devant nous, le reliquat seulement peut nous toucher. Quand
+    notre quote change de prix, on reset à la position de fin de queue.
+
     `events` est un itérateur de tuples (ts, kind, payload).
     Retourne (equity_curve_df, metrics_dict).
     """
@@ -192,10 +190,13 @@ def replay_with_book(
         fast_vol_alpha=settings.fast_vol_alpha,
     )
     mm = _build_strategy(settings, overrides)
+    queue = QueuePositionTracker()
 
     equity_rows: list[dict] = []
+    fill_events: list[dict] = []  # infos riches par fill pour les métriques MM
     trades_encountered = 0
-    trades_eligible_for_fill = 0  # prix touche nos quotes
+    trades_touching_quote = 0  # le prix nous aurait touché (sans tenir compte de la queue)
+    trades_filling_us = 0  # nous avons vraiment été rempli (au moins en partie)
     reduce_only_ticks = 0
     total_ticks = 0
 
@@ -225,6 +226,49 @@ def replay_with_book(
                 combined_signal_bps=micro.get("micro_signal_bps"),
                 force=True,
             )
+            # Sync queue tracker avec la nouvelle quote. Règles :
+            # - on quote STRICTEMENT MIEUX que le best (price > best_bid
+            #   côté bid, ou < best_ask côté ask) → on crée un nouveau
+            #   niveau ou on est devant toute la liquidité observée →
+            #   queue_ahead = 0 ;
+            # - on quote AU MÊME PRIX que le best → on arrive en queue
+            #   derrière la liquidité déjà affichée → queue_ahead = touch_depth ;
+            # - on quote STRICTEMENT MOINS BON que le best → peu probable
+            #   en MM (ordre non-compétitif) mais on met une estimation
+            #   très pessimiste (queue_ahead = touch_depth + une taille
+            #   supposée au niveau) — dans la pratique on ne se fait
+            #   presque jamais remplir dans ce cas.
+            best_bid = book.best_bid()
+            best_ask = book.best_ask()
+            if mm.current_bid is not None and best_bid is not None:
+                if mm.current_bid.price > best_bid + 1e-9:
+                    queue_ahead_bid = 0.0
+                elif abs(mm.current_bid.price - best_bid) <= 1e-9:
+                    queue_ahead_bid = book.touch_depth("bid") or 0.0
+                else:
+                    # Quote plus basse que best — on est derrière toute
+                    # la liquidité déjà présente au best ET du niveau
+                    # intermédiaire, si existant. Approximation raisonnable.
+                    queue_ahead_bid = (book.touch_depth("bid") or 0.0) * 2.0
+                queue.sync_quote(
+                    "bid", mm.current_bid.price, mm.current_bid.size, queue_ahead_bid
+                )
+            else:
+                queue.sync_quote("bid", None, 0.0, 0.0)
+
+            if mm.current_ask is not None and best_ask is not None:
+                if mm.current_ask.price < best_ask - 1e-9:
+                    queue_ahead_ask = 0.0
+                elif abs(mm.current_ask.price - best_ask) <= 1e-9:
+                    queue_ahead_ask = book.touch_depth("ask") or 0.0
+                else:
+                    queue_ahead_ask = (book.touch_depth("ask") or 0.0) * 2.0
+                queue.sync_quote(
+                    "ask", mm.current_ask.price, mm.current_ask.size, queue_ahead_ask
+                )
+            else:
+                queue.sync_quote("ask", None, 0.0, 0.0)
+
             mtm = mm.mark_to_market(mid)
             total_ticks += 1
             if bool(mm.last_quote_context.get("reduce_only", False)):
@@ -247,156 +291,228 @@ def replay_with_book(
         else:  # trade
             trade: Trade = payload
             trades_encountered += 1
-            best_bid = book.best_bid()
-            best_ask = book.best_ask()
             mid = book.mid_price()
-            # Vérifier si le trade est éligible pour nous toucher.
-            if (
-                mm.current_bid is not None
-                and trade.side == "BUY"
-                and best_bid is not None
-            ):
-                if mm.current_bid.price >= trade.price - 1e-9:
-                    trades_eligible_for_fill += 1
-            elif (
-                mm.current_ask is not None
-                and trade.side == "SELL"
-                and best_ask is not None
-            ):
-                if mm.current_ask.price <= trade.price + 1e-9:
-                    trades_eligible_for_fill += 1
 
-            # Mise à jour des signaux VPIN / trade-flow.
+            # Convention Coinbase : `side` = côté du MAKER. L'agresseur = l'inverse.
+            # - maker BUY  → agresseur SELL → consomme bids → touche NOTRE bid
+            # - maker SELL → agresseur BUY  → consomme asks → touche NOTRE ask
+            aggressor = "SELL" if trade.side == "BUY" else "BUY"
+
+            # Check éligibilité "prix" (aurait touché nos quotes sans tenir
+            # compte de la queue — statistique brute pour diag).
+            if aggressor == "SELL" and mm.current_bid is not None:
+                if mm.current_bid.price >= trade.price - 1e-9:
+                    trades_touching_quote += 1
+            elif aggressor == "BUY" and mm.current_ask is not None:
+                if mm.current_ask.price <= trade.price + 1e-9:
+                    trades_touching_quote += 1
+
+            # Mise à jour des signaux VPIN / trade-flow (côté maker Coinbase).
             tracker.on_trade(
                 ts_ms=trade.time.timestamp() * 1000.0,
                 side=trade.side,
                 size=trade.size,
             )
 
-            mm.on_trade(
-                trade,
-                best_bid=best_bid,
-                best_ask=best_ask,
-                bid_touch_depth=(
-                    book.touch_depth("bid") if best_bid is not None else 0.0
-                ),
-                ask_touch_depth=(
-                    book.touch_depth("ask") if best_ask is not None else 0.0
-                ),
-                mid_price=mid,
-            )
+            # Modèle de queue : le trade consomme d'abord la file devant
+            # nous, on est rempli sur le reliquat.
+            filled_qty = queue.on_trade(aggressor, trade.price, trade.size)
+            if filled_qty > 1e-12:
+                # Injecte le fill dans la stratégie (P&L, position, cash).
+                # On respecte le cooldown post-fill comme le code live.
+                now_ms = trade.time.timestamp() * 1000.0
+                if now_ms - mm.last_fill_ts_ms >= mm.cooldown_ms_after_fill:
+                    # Vérifie le risque avant d'exécuter.
+                    if aggressor == "SELL" and mm.current_bid is not None:
+                        if mm.risk_manager.can_execute_fill(
+                            mm.position_btc, filled_qty,
+                            mm.current_bid.price, mm.last_equity,
+                        ):
+                            fill = mm._execute_buy(trade, filled_qty)
+                            mm.last_fill_ts_ms = now_ms
+                            fill_events.append(_fill_event(fill, mid, mm, trade))
+                            trades_filling_us += 1
+                            # Notre taille a changé → sync queue tracker.
+                            queue.bid.my_size_btc = (
+                                mm.current_bid.size if mm.current_bid else 0.0
+                            )
+                    elif aggressor == "BUY" and mm.current_ask is not None:
+                        if mm.risk_manager.can_execute_fill(
+                            mm.position_btc, -filled_qty,
+                            mm.current_ask.price, mm.last_equity,
+                        ):
+                            fill = mm._execute_sell(trade, filled_qty)
+                            mm.last_fill_ts_ms = now_ms
+                            fill_events.append(_fill_event(fill, mid, mm, trade))
+                            trades_filling_us += 1
+                            queue.ask.my_size_btc = (
+                                mm.current_ask.size if mm.current_ask else 0.0
+                            )
 
     curve = pd.DataFrame(equity_rows)
     metrics = compute_risk_metrics(
         curve,
         settings,
         fills=mm.executions,
+        fill_events=fill_events,
         trades_encountered=trades_encountered,
-        trades_eligible_for_fill=trades_eligible_for_fill,
+        trades_touching_quote=trades_touching_quote,
+        trades_filling_us=trades_filling_us,
         reduce_only_ticks=reduce_only_ticks,
         total_ticks=total_ticks,
     )
     return curve, metrics
 
 
+def _fill_event(fill, mid: float | None, mm, trade) -> dict:
+    """Crée une ligne riche pour un fill, utilisée par les métriques MM.
+
+    On capture le mid au moment du fill pour pouvoir mesurer le spread
+    capturé, ainsi que l'inventaire résultant.
+    """
+    edge_bps = 0.0
+    if mid and mid > 0:
+        if fill.side == "BUY":
+            edge_bps = (mid - fill.price) / mid * 10_000.0
+        else:
+            edge_bps = (fill.price - mid) / mid * 10_000.0
+    return {
+        "time": fill.time.isoformat(),
+        "side": fill.side,
+        "price": fill.price,
+        "size": fill.size,
+        "mid_at_fill": mid,
+        "edge_bps": edge_bps,
+        "position_after": mm.position_btc,
+        "realized_after": mm.realized_pnl,
+    }
+
+
 # =====================================================================
 # Helpers métriques
 # =====================================================================
-def _build_minute_equity_returns(curve: pd.DataFrame) -> tuple[pd.Series, float]:
-    """Construit les returns minute à partir de la courbe d'equity.
+def _observation_seconds(curve: pd.DataFrame) -> float:
+    """Durée totale observée en secondes."""
+    if curve.empty or "timestamp" not in curve.columns:
+        return 0.0
+    ts = pd.to_datetime(
+        curve["timestamp"], utc=True, errors="coerce", format="ISO8601"
+    ).dropna()
+    if len(ts) < 2:
+        return 0.0
+    return max((ts.iloc[-1] - ts.iloc[0]).total_seconds(), 0.0)
 
-    Retourne :
-    - returns_per_min : série de returns par minute
-    - observation_minutes : durée totale observée en minutes
+
+# =====================================================================
+# Métriques market-making spécifiques
+# =====================================================================
+def _mm_metrics_from_fill_events(
+    fill_events: list[dict], observation_seconds: float
+) -> dict:
+    """Calcule les métriques propres au market making à partir des fills.
+
+    - ``avg_edge_bps`` : distance moyenne du fill au mid au moment du fill.
+      Pour un MM, on veut être rempli à un prix _meilleur_ que le mid
+      (edge > 0). Un edge moyen négatif est un signal d'alerte.
+    - ``spread_captured_usd`` : somme de ``edge_bps × notional_fill / 10_000``.
+      C'est l'avantage tarifaire cumulé capturé par le MM au moment des fills
+      (à distinguer du P&L, qui dépend aussi du chemin du mid après coup).
+    - ``inventory_turnover_btc`` : somme des tailles de fills absolues.
+      Représente le volume tradé total.
+    - ``fills_per_hour`` : cadence des fills, indépendante de la taille.
+    - ``avg_holding_time_sec`` : temps moyen entre l'ouverture et la
+      clôture FIFO d'un lot de position.
+    - ``round_trips`` : nombre de paires buy/sell (ou sell/buy) appariées.
     """
-    if curve.empty or "timestamp" not in curve.columns or "equity" not in curve.columns:
-        return pd.Series(dtype=float), 0.0
+    out = {
+        "avg_edge_bps": 0.0,
+        "edge_weighted_bps": 0.0,
+        "spread_captured_usd": 0.0,
+        "inventory_turnover_btc": 0.0,
+        "fills_per_hour": 0.0,
+        "avg_holding_time_sec": 0.0,
+        "round_trips": 0,
+        "realized_per_round_trip_usd": 0.0,
+    }
+    if not fill_events:
+        return out
 
-    ts = pd.to_datetime(curve["timestamp"], utc=True, errors="coerce", format="ISO8601")
-    tmp = pd.DataFrame({"ts": ts, "equity": curve["equity"]}).dropna(subset=["ts"])
-    if tmp.empty:
-        return pd.Series(dtype=float), 0.0
+    edges = [float(f.get("edge_bps", 0.0)) for f in fill_events]
+    sizes = [float(f.get("size", 0.0)) for f in fill_events]
+    prices = [float(f.get("price", 0.0)) for f in fill_events]
 
-    tmp = tmp.sort_values("ts").drop_duplicates(subset="ts", keep="last")
-    if len(tmp) < 2:
-        return pd.Series(dtype=float), 0.0
+    out["avg_edge_bps"] = float(np.mean(edges)) if edges else 0.0
+    # Edge pondéré par le notional : plus représentatif parce qu'un gros fill
+    # avec edge faible pèse plus dans le P&L qu'un petit fill avec edge fort.
+    total_notional = sum(p * s for p, s in zip(prices, sizes))
+    if total_notional > 0:
+        weighted_edge = (
+            sum(e * p * s for e, p, s in zip(edges, prices, sizes)) / total_notional
+        )
+        out["edge_weighted_bps"] = float(weighted_edge)
+    # Edge × notional → USD capturés (en théorie, à la marge du fill).
+    captured = [
+        e * p * s / 10_000.0
+        for e, p, s in zip(edges, prices, sizes)
+    ]
+    out["spread_captured_usd"] = float(sum(captured))
+    out["inventory_turnover_btc"] = float(sum(sizes))
 
-    start_ts = tmp["ts"].iloc[0]
-    end_ts = tmp["ts"].iloc[-1]
-    observation_minutes = max(
-        (end_ts - start_ts).total_seconds() / 60.0,
-        0.0,
-    )
+    if observation_seconds > 0:
+        out["fills_per_hour"] = len(fill_events) * 3600.0 / observation_seconds
 
-    equity_1m = tmp.set_index("ts")["equity"].resample("1min").last().ffill()
+    # Apparie les fills opposés en FIFO pour mesurer, sur chaque paire
+    # (ouverture, clôture), le temps écoulé et le P&L réalisé.
+    long_queue: list[tuple[pd.Timestamp, float, float]] = []  # (t, size, price)
+    short_queue: list[tuple[pd.Timestamp, float, float]] = []
+    holding_times_sec: list[float] = []
+    round_trip_pnls: list[float] = []
 
-    returns_per_min = equity_1m.pct_change().replace([np.inf, -np.inf], np.nan).dropna()
-    return returns_per_min, observation_minutes
+    for f in fill_events:
+        side = str(f.get("side", "")).upper()
+        size = float(f.get("size", 0.0))
+        price = float(f.get("price", 0.0))
+        t = pd.to_datetime(f.get("time"), utc=True, errors="coerce")
+        if pd.isna(t) or size <= 0:
+            continue
+        if side == "BUY":
+            # Clôture des shorts puis ouverture de long.
+            while size > 1e-12 and short_queue:
+                t_open, s_open, p_open = short_queue[0]
+                close = min(size, s_open)
+                holding_times_sec.append((t - t_open).total_seconds())
+                # Round-trip : short ouvert à ``p_open`` refermé à
+                # ``price`` → gain réalisé = (p_open - price) * close.
+                round_trip_pnls.append((p_open - price) * close)
+                size -= close
+                if close >= s_open - 1e-12:
+                    short_queue.pop(0)
+                else:
+                    short_queue[0] = (t_open, s_open - close, p_open)
+            if size > 1e-12:
+                long_queue.append((t, size, price))
+        else:  # SELL
+            while size > 1e-12 and long_queue:
+                t_open, s_open, p_open = long_queue[0]
+                close = min(size, s_open)
+                holding_times_sec.append((t - t_open).total_seconds())
+                # Round-trip P&L : long ouvert à p_open, refermé à price
+                # → gagne (price - p_open) × close.
+                round_trip_pnls.append((price - p_open) * close)
+                size -= close
+                if close >= s_open - 1e-12:
+                    long_queue.pop(0)
+                else:
+                    long_queue[0] = (t_open, s_open - close, p_open)
+            if size > 1e-12:
+                short_queue.append((t, size, price))
 
-
-def _annualized_sharpe_any_length(
-    returns_per_period: pd.Series,
-    periods_per_year: float,
-) -> float:
-    """Sharpe annualisé calculable même sur petit échantillon.
-
-    Retourne 0.0 si :
-    - moins de 2 points
-    - volatilité nulle ou quasi nulle
-    """
-    if returns_per_period is None:
-        return 0.0
-
-    r = pd.Series(returns_per_period, dtype=float)
-    r = r.replace([np.inf, -np.inf], np.nan).dropna()
-
-    if len(r) < 2:
-        return 0.0
-
-    mean_r = float(r.mean())
-    std_r = float(r.std(ddof=0))
-    if not np.isfinite(std_r) or std_r <= 1e-12:
-        return 0.0
-
-    sharpe = mean_r / std_r * math.sqrt(periods_per_year)
-    if not np.isfinite(sharpe):
-        return 0.0
-    return float(sharpe)
-
-
-def _annualized_sortino_any_length(
-    returns_per_period: pd.Series,
-    periods_per_year: float,
-    target_return: float = 0.0,
-) -> float:
-    """Sortino annualisé calculable même sur petit échantillon.
-
-    On utilise la downside deviation définie sur TOUS les points :
-        downside_dev = sqrt(mean(min(r - target, 0)^2))
-
-    Cela évite d'exiger un nombre minimal de returns négatifs.
-    """
-    if returns_per_period is None:
-        return 0.0
-
-    r = pd.Series(returns_per_period, dtype=float)
-    r = r.replace([np.inf, -np.inf], np.nan).dropna()
-
-    if len(r) < 2:
-        return 0.0
-
-    excess = r - target_return
-    downside = np.minimum(excess, 0.0)
-    downside_dev = float(np.sqrt(np.mean(np.square(downside))))
-
-    if not np.isfinite(downside_dev) or downside_dev <= 1e-12:
-        return 0.0
-
-    mean_excess = float(excess.mean())
-    sortino = mean_excess / downside_dev * math.sqrt(periods_per_year)
-    if not np.isfinite(sortino):
-        return 0.0
-    return float(sortino)
+    out["round_trips"] = len(round_trip_pnls)
+    if holding_times_sec:
+        out["avg_holding_time_sec"] = float(np.mean(holding_times_sec))
+    if round_trip_pnls:
+        out["realized_per_round_trip_usd"] = float(np.mean(round_trip_pnls))
+    return out
 
 
 # =====================================================================
@@ -406,33 +522,45 @@ def compute_risk_metrics(
     curve: pd.DataFrame,
     settings: Settings,
     fills: list[dict],
-    trades_encountered: int,
-    trades_eligible_for_fill: int,
-    reduce_only_ticks: int,
-    total_ticks: int,
+    fill_events: list[dict] | None = None,
+    trades_encountered: int = 0,
+    trades_touching_quote: int = 0,
+    trades_filling_us: int = 0,
+    reduce_only_ticks: int = 0,
+    total_ticks: int = 0,
+    trades_eligible_for_fill: int | None = None,
 ) -> dict:
-    """Panel complet de métriques de risque/performance."""
+    """Panel de métriques de performance et de risque, orienté market making."""
+    if trades_eligible_for_fill is not None and trades_touching_quote == 0:
+        trades_touching_quote = trades_eligible_for_fill
+
     base = {
         "final_pnl": 0.0,
         "total_return_pct": 0.0,
         "max_drawdown_usd": 0.0,
         "max_drawdown_pct": 0.0,
-        "sharpe_ratio": 0.0,
-        "sortino_ratio": 0.0,
         "calmar_ratio": 0.0,
         "fills": len(fills),
         "trades_encountered": trades_encountered,
-        "trades_eligible_for_fill": trades_eligible_for_fill,
+        "trades_touching_quote": trades_touching_quote,
+        "trades_filling_us": trades_filling_us,
         "fill_rate_pct": 0.0,
-        "hit_ratio_pct": 0.0,
+        "naive_fill_rate_pct": 0.0,
+        "queue_drag_pct": 0.0,
         "avg_pnl_per_fill": 0.0,
         "inventory_std_btc": 0.0,
         "time_in_loss_pct": 0.0,
         "reduce_only_pct": 0.0,
+        "observation_seconds": 0.0,
         "observation_minutes": 0.0,
-        "return_points": 0,
-        "nonzero_return_points": 0,
-        "metrics_reliability": "none",
+        "avg_edge_bps": 0.0,
+        "edge_weighted_bps": 0.0,
+        "spread_captured_usd": 0.0,
+        "inventory_turnover_btc": 0.0,
+        "fills_per_hour": 0.0,
+        "avg_holding_time_sec": 0.0,
+        "round_trips": 0,
+        "realized_per_round_trip_usd": 0.0,
     }
     if curve.empty:
         return base
@@ -447,128 +575,55 @@ def compute_risk_metrics(
     max_dd_usd = float(drawdown.min())
     max_dd_pct = 100.0 * max_dd_usd / initial if initial > 0 else 0.0
 
-    # Returns par minute sur equity resamplée proprement.
-    returns_per_min, observation_minutes = _build_minute_equity_returns(curve)
-
-    # Crypto 24/7 : 525600 minutes par an.
-    periods_per_year = 525600.0
-
-    # Calcul même sur petit fold.
-    sharpe = _annualized_sharpe_any_length(
-        returns_per_min,
-        periods_per_year=periods_per_year,
-    )
-
-    sortino = _annualized_sortino_any_length(
-        returns_per_min,
-        periods_per_year=periods_per_year,
-        target_return=0.0,
-    )
+    observation_seconds = _observation_seconds(curve)
 
     calmar = 0.0
     if max_dd_pct < -1e-12:
         calmar = total_return_pct / abs(max_dd_pct)
 
-    # Fill rate : fills effectifs / trades qui auraient pu nous toucher.
     fill_rate_pct = 0.0
-    if trades_eligible_for_fill > 0:
-        fill_rate_pct = 100.0 * len(fills) / trades_eligible_for_fill
+    if trades_touching_quote > 0:
+        fill_rate_pct = 100.0 * trades_filling_us / trades_touching_quote
+    # Sans modèle de file d'attente, tout trade qui touche en prix est
+    # supposé remplir. On compare au fill rate réel pour quantifier le
+    # "queue drag" : fraction des touches au prix perdues à cause de la
+    # liquidité présente devant nous.
+    naive_fill_rate_pct = 100.0 if trades_touching_quote > 0 else 0.0
+    queue_drag_pct = max(0.0, naive_fill_rate_pct - fill_rate_pct)
 
-    # Hit ratio : % de fills qui ont été clôturés en profit.
-    hit_ratio_pct = _hit_ratio_fifo(fills)
     avg_pnl_per_fill = final_pnl / len(fills) if fills else 0.0
 
     inventory_std = float(pd.Series(curve["position_btc"]).std(ddof=0))
-
     time_in_loss = float((pd.Series(equity) < initial).mean() * 100.0)
     reduce_only_pct = (
         100.0 * reduce_only_ticks / total_ticks if total_ticks > 0 else 0.0
     )
 
-    nonzero_return_points = int((returns_per_min.abs() > 1e-15).sum())
-
-    if len(returns_per_min) >= 60:
-        metrics_reliability = "high"
-    elif len(returns_per_min) >= 15:
-        metrics_reliability = "medium"
-    elif len(returns_per_min) >= 2:
-        metrics_reliability = "low"
-    else:
-        metrics_reliability = "none"
+    mm_extra = _mm_metrics_from_fill_events(
+        fill_events or [], observation_seconds=observation_seconds
+    )
 
     return {
         "final_pnl": final_pnl,
         "total_return_pct": total_return_pct,
         "max_drawdown_usd": max_dd_usd,
         "max_drawdown_pct": max_dd_pct,
-        "sharpe_ratio": sharpe,
-        "sortino_ratio": sortino,
         "calmar_ratio": calmar,
         "fills": len(fills),
         "trades_encountered": trades_encountered,
-        "trades_eligible_for_fill": trades_eligible_for_fill,
+        "trades_touching_quote": trades_touching_quote,
+        "trades_filling_us": trades_filling_us,
         "fill_rate_pct": fill_rate_pct,
-        "hit_ratio_pct": hit_ratio_pct,
+        "naive_fill_rate_pct": naive_fill_rate_pct,
+        "queue_drag_pct": queue_drag_pct,
         "avg_pnl_per_fill": avg_pnl_per_fill,
         "inventory_std_btc": inventory_std,
         "time_in_loss_pct": time_in_loss,
         "reduce_only_pct": reduce_only_pct,
-        "observation_minutes": observation_minutes,
-        "return_points": int(len(returns_per_min)),
-        "nonzero_return_points": nonzero_return_points,
-        "metrics_reliability": metrics_reliability,
+        "observation_seconds": observation_seconds,
+        "observation_minutes": observation_seconds / 60.0,
+        **mm_extra,
     }
-
-
-def _hit_ratio_fifo(fills: list[dict]) -> float:
-    """% de fills "gagnants" en appariant BUYs et SELLs FIFO.
-
-    Approximation simple : on garde deux files (longs/shorts), quand un
-    SELL arrive on consomme les BUYs antérieurs et on compte ceux dont
-    le prix d'achat était < prix de vente comme gagnants (et inversement).
-    """
-    if not fills:
-        return 0.0
-    long_queue: list[tuple[float, float]] = []  # (price, remaining_size)
-    short_queue: list[tuple[float, float]] = []
-    wins = 0
-    total_closes = 0
-    for f in fills:
-        side = str(f.get("side", "")).upper()
-        price = float(f.get("price", 0.0))
-        size = float(f.get("size", 0.0))
-        if side == "BUY":
-            # Clôture des shorts puis renforcement des longs.
-            while size > 1e-12 and short_queue:
-                sp, ss = short_queue[0]
-                close = min(size, ss)
-                total_closes += 1
-                if sp > price:
-                    wins += 1
-                size -= close
-                if close >= ss - 1e-12:
-                    short_queue.pop(0)
-                else:
-                    short_queue[0] = (sp, ss - close)
-            if size > 1e-12:
-                long_queue.append((price, size))
-        else:
-            while size > 1e-12 and long_queue:
-                lp, ls = long_queue[0]
-                close = min(size, ls)
-                total_closes += 1
-                if price > lp:
-                    wins += 1
-                size -= close
-                if close >= ls - 1e-12:
-                    long_queue.pop(0)
-                else:
-                    long_queue[0] = (lp, ls - close)
-            if size > 1e-12:
-                short_queue.append((price, size))
-    if total_closes == 0:
-        return 0.0
-    return 100.0 * wins / total_closes
 
 
 # =====================================================================
@@ -652,14 +707,19 @@ def walkforward_backtest(
             events = iter_replay_events(train_book, train_trades)
             _, m = replay_with_book(events, settings, overrides)
 
-            # Score de sélection plus robuste : on évite de sur-optimiser
-            # un Sharpe absurde sur échantillon trop court.
+            # Score de sélection orienté market making. On privilégie les
+            # configs qui :
+            # - génèrent du P&L réel (final_pnl)
+            # - avec des round-trips profitables (realized_per_round_trip)
+            # - sans sacrifier trop de drawdown
+            # - en gardant un fill rate non-trivial (qu'on trade bien)
+            rt_pnl = m.get("realized_per_round_trip_usd", 0.0)
+            fill_rate = m.get("fill_rate_pct", 0.0)
             score = (
-                0.35 * m["sharpe_ratio"]
-                + 0.15 * m["sortino_ratio"]
-                + 0.25 * m["total_return_pct"]
-                - 0.20 * abs(m["max_drawdown_pct"])
-                + 0.05 * m["fill_rate_pct"]
+                1.0 * m["final_pnl"]
+                + 50.0 * rt_pnl
+                + 0.1 * fill_rate
+                - 5.0 * abs(m["max_drawdown_usd"])
             )
             if score > best_score:
                 best_score = score
@@ -712,16 +772,29 @@ def plot_walkforward(
         plt.close()
 
     if not results_df.empty:
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+        fig, axes = plt.subplots(1, 4, figsize=(18, 4))
         axes[0].bar(results_df["fold"], results_df["final_pnl"])
-        axes[0].set_title("Final PnL par fold (USD)")
+        axes[0].set_title("Final P&L par fold (USD)")
         axes[0].set_xlabel("Fold")
-        axes[1].bar(results_df["fold"], results_df["sharpe_ratio"])
-        axes[1].set_title("Sharpe ratio (ann.)")
+        axes[1].bar(
+            results_df["fold"],
+            results_df.get(
+                "edge_weighted_bps", pd.Series([0] * len(results_df))
+            ),
+        )
+        axes[1].set_title("Edge pondéré (bps)")
         axes[1].set_xlabel("Fold")
-        axes[2].bar(results_df["fold"], results_df["fill_rate_pct"])
-        axes[2].set_title("Fill rate (%)")
+        axes[2].bar(
+            results_df["fold"],
+            results_df.get(
+                "realized_per_round_trip_usd", pd.Series([0] * len(results_df))
+            ),
+        )
+        axes[2].set_title("P&L par round-trip (USD)")
         axes[2].set_xlabel("Fold")
+        axes[3].bar(results_df["fold"], results_df["fill_rate_pct"])
+        axes[3].set_title("Fill rate réel (%)")
+        axes[3].set_xlabel("Fold")
         plt.tight_layout()
         plt.savefig(output_dir / "walkforward_metrics.png")
         plt.close()
@@ -751,25 +824,33 @@ def main() -> None:
         curve_df.to_csv(output_dir / "walkforward_curve.csv", index=False)
     plot_walkforward(results_df, curve_df, output_dir)
     if not results_df.empty:
-        # Affichage synthèse : on sélectionne les colonnes clés.
-        cols = [
+        perf_cols = [
             "fold",
             "final_pnl",
-            "total_return_pct",
-            "max_drawdown_pct",
-            "sharpe_ratio",
-            "sortino_ratio",
-            "calmar_ratio",
-            "fills",
-            "fill_rate_pct",
-            "hit_ratio_pct",
-            "inventory_std_btc",
+            "max_drawdown_usd",
             "observation_minutes",
-            "return_points",
-            "nonzero_return_points",
+            "fills",
+            "round_trips",
         ]
-        cols = [c for c in cols if c in results_df.columns]
-        print(results_df[cols].to_string(index=False))
+        mm_cols = [
+            "fold",
+            "fill_rate_pct",
+            "queue_drag_pct",
+            "avg_edge_bps",
+            "edge_weighted_bps",
+            "spread_captured_usd",
+            "realized_per_round_trip_usd",
+            "avg_holding_time_sec",
+            "fills_per_hour",
+            "inventory_turnover_btc",
+        ]
+        perf_cols = [c for c in perf_cols if c in results_df.columns]
+        mm_cols = [c for c in mm_cols if c in results_df.columns]
+
+        print("\n=== Performance ===")
+        print(results_df[perf_cols].to_string(index=False))
+        print("\n=== Métriques market making ===")
+        print(results_df[mm_cols].to_string(index=False))
     else:
         print("Aucun fold calculé.")
 

@@ -8,13 +8,11 @@ from typing import Iterable
 
 
 class _FlushMarker:
-    """Message de synchronisation envoyé par flush().
+    """Sentinelle envoyée par ``flush()`` pour synchroniser l'écriture.
 
-    Quand le thread writer rencontre ce marker dans la queue, il écrit
-    immédiatement tout son buffer puis signale l'Event associé pour
-    débloquer le caller de flush(). Permet un flush synchrone sans avoir
-    à abuser de queue.join() (qui pose problème quand task_done n'est pas
-    toujours appelé en symétrique).
+    Le thread writer qui rencontre ce marker dans la queue écrit
+    immédiatement tout son buffer puis signale l'Event associé, ce qui
+    débloque le thread appelant de ``flush()``.
     """
 
     __slots__ = ("event",)

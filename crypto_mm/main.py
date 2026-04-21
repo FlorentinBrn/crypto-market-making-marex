@@ -63,9 +63,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--web-dashboard",
         action="store_true",
         help=(
-            "Lance le dashboard web Dash LIVE dans un thread daemon, "
-            "lisant directement la mémoire du feed (latence UI ~= 250 ms). "
-            "Accessible sur http://localhost:8050 par défaut."
+            "Lance le dashboard web Dash en mode live dans un thread "
+            "daemon, branché sur la mémoire du feed. Accessible par "
+            "défaut sur http://localhost:8050."
         ),
     )
     parser.add_argument(
@@ -109,10 +109,11 @@ def main() -> None:
 
     app = CoinbaseMarketDataApp(settings)
 
-    # Dashboard web live (optionnel) : lance un serveur Dash dans un
-    # thread daemon qui lit la mémoire de `app`. Latence UI ~250 ms.
+    # Dashboard web live optionnel : serveur Dash dans un thread daemon
+    # branché directement sur la mémoire de ``app``.
     if args.web_dashboard:
-        # Import tardif pour ne pas imposer la dep Dash si non utilisée.
+        # Import tardif pour ne pas imposer Dash comme dépendance si
+        # le mode web n'est pas utilisé.
         from .ui.dash_app import run_live_server_threaded
 
         print(

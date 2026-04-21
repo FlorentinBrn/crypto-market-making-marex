@@ -1,31 +1,22 @@
 """Dashboard web Dash.
 
-Serveur Flask/Dash standalone qui lit périodiquement les CSV produits par
-`CoinbaseMarketDataApp` (`data/` par défaut) et affiche une vue live :
+Application Dash qui expose une vue live des métriques de trading :
 
-- équity / P&L au cours du temps
-- position et exposure
-- spread inside + signaux microstructure
-- dernier état du carnet
+- P&L réalisé et non-réalisé
+- position BTC et prix mid
+- spread inside et signaux de microstructure
+- état courant du carnet
 - fills récents
-- cartes de risque (loss util, health score, reduce-only)
+- cartes de risque (loss utilization, health score, reduce-only)
 
-Conception clé : **aucune dépendance partagée avec le feed**. Le
-dashboard est un process séparé qui relit les CSV — on peut le lancer
-pendant un run live, après un run, ou sur les outputs d'un replay sans
-changement de code.
+Deux modes d'exécution :
 
-Usage :
-```bash
-# Run live dans un terminal
-python -m crypto_mm.main
-
-# Dashboard dans un autre terminal
-python -m crypto_mm.ui.dash_app --data-dir data --port 8050
-```
-
-Par défaut, le dashboard se rafraîchit toutes les 1000 ms (configurable
-via --refresh-ms). Pour un run terminé, on peut augmenter à 60000 ms.
+- ``create_app(data_dir)`` : mode offline, lit périodiquement les CSV
+  produits par un run précédent. Utile pour visualiser un run terminé.
+- ``create_live_app(feed_app)`` : mode live, branché directement sur la
+  mémoire d'un ``CoinbaseMarketDataApp`` en cours d'exécution. Utilise
+  le pattern ``extendData`` de Plotly pour des mises à jour incrémentales
+  à coût constant par tick.
 """
 
 from __future__ import annotations
@@ -49,6 +40,19 @@ except ImportError as e:
 # ---------------------------------------------------------------------
 # Lecture CSV — tolérante aux fichiers vides / manquants
 # ---------------------------------------------------------------------
+def _local_tz():
+    """Retourne le fuseau horaire local du PC.
+
+    Utilise ``datetime.now().astimezone().tzinfo`` qui retourne un
+    ``datetime.timezone`` avec offset correct (fonctionne sur tous OS,
+    y compris Windows où les noms de fuseau peuvent poser problème à
+    pandas).
+    """
+    from datetime import datetime as _dt
+
+    return _dt.now().astimezone().tzinfo
+
+
 def _read_csv_safe(path: Path, tail: int | None = None) -> pd.DataFrame:
     """Lit un CSV s'il existe, retourne un df vide sinon.
 
@@ -68,11 +72,22 @@ def _read_csv_safe(path: Path, tail: int | None = None) -> pd.DataFrame:
 
 
 def _parse_ts(df: pd.DataFrame, col: str) -> pd.DataFrame:
-    """Parse une colonne de timestamp en datetime UTC (format ISO8601)."""
+    """Parse une colonne de timestamp et la convertit en **heure locale naïve**.
+
+    Les datetimes tz-aware causent parfois des surprises d'affichage avec
+    Plotly (axe X en UTC même si la valeur est tz-aware locale). On retire
+    le fuseau après conversion pour que Plotly affiche directement
+    l'heure locale sans re-conversion.
+    """
     if df.empty or col not in df.columns:
         return df
     df = df.copy()
-    df[col] = pd.to_datetime(df[col], utc=True, errors="coerce", format="ISO8601")
+    parsed = pd.to_datetime(df[col], utc=True, errors="coerce", format="ISO8601")
+    try:
+        parsed = parsed.dt.tz_convert(_local_tz()).dt.tz_localize(None)
+    except Exception:
+        parsed = parsed.dt.tz_localize(None)
+    df[col] = parsed
     df = df.dropna(subset=[col])
     return df
 
@@ -236,14 +251,42 @@ def _empty_fig(title: str) -> go.Figure:
     return fig
 
 
-def build_equity_figure(state_df: pd.DataFrame) -> go.Figure:
+# Nombre maximum de points envoyés à Plotly par figure. Au-delà, on
+# décime (prend 1 point sur N) — l'œil humain ne distingue pas la
+# différence sur un graphe de ~1000 px de large, et la charge JSON est
+# divisée d'autant.
+_MAX_PLOT_POINTS = 300
+
+
+def _downsample(df: pd.DataFrame, max_points: int = _MAX_PLOT_POINTS) -> pd.DataFrame:
+    """Décime un DataFrame pour limiter le nombre de points affichés.
+
+    On garde 1 point sur ``step`` où ``step = ceil(len / max_points)``.
+    Préserve toujours le dernier point (utile pour voir la valeur courante).
+    """
+    n = len(df)
+    if n <= max_points:
+        return df
+    step = (n + max_points - 1) // max_points  # ceil division
+    # iloc avec step, puis on s'assure que le dernier point est inclus.
+    sub = df.iloc[::step]
+    if sub.index[-1] != df.index[-1]:
+        sub = pd.concat([sub, df.iloc[[-1]]])
+    return sub
+
+
+def build_equity_figure(state_df: pd.DataFrame, pre_parsed: bool = False) -> go.Figure:
     """P&L réalisé et non-réalisé dans le temps (sans l'equity en valeur
     absolue : on regarde la performance, pas le niveau du capital)."""
     if state_df.empty:
         return _empty_fig("P&L — en attente de données")
-    df = _parse_ts(state_df, "timestamp")
-    if df.empty:
-        return _empty_fig("P&L")
+    if pre_parsed:
+        df = state_df
+    else:
+        df = _parse_ts(state_df, "timestamp")
+        if df.empty:
+            return _empty_fig("P&L")
+        df = _downsample(df)
     fig = go.Figure()
     if "realized_pnl" in df.columns:
         fig.add_trace(
@@ -270,13 +313,19 @@ def build_equity_figure(state_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def build_position_figure(state_df: pd.DataFrame) -> go.Figure:
+def build_position_figure(
+    state_df: pd.DataFrame, pre_parsed: bool = False
+) -> go.Figure:
     """Position BTC + mid price overlay."""
     if state_df.empty:
         return _empty_fig("Position / Mid — en attente de données")
-    df = _parse_ts(state_df, "timestamp")
-    if df.empty:
-        return _empty_fig("Position / Mid")
+    if pre_parsed:
+        df = state_df
+    else:
+        df = _parse_ts(state_df, "timestamp")
+        if df.empty:
+            return _empty_fig("Position / Mid")
+        df = _downsample(df)
     fig = go.Figure()
     if "position_btc" in df.columns:
         fig.add_trace(
@@ -306,13 +355,19 @@ def build_position_figure(state_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def build_microstructure_figure(state_df: pd.DataFrame) -> go.Figure:
+def build_microstructure_figure(
+    state_df: pd.DataFrame, pre_parsed: bool = False
+) -> go.Figure:
     """Micro signal, OFI EWMA, VPIN, fast vol."""
     if state_df.empty:
         return _empty_fig("Microstructure — en attente de données")
-    df = _parse_ts(state_df, "timestamp")
-    if df.empty:
-        return _empty_fig("Microstructure")
+    if pre_parsed:
+        df = state_df
+    else:
+        df = _parse_ts(state_df, "timestamp")
+        if df.empty:
+            return _empty_fig("Microstructure")
+        df = _downsample(df)
     fig = go.Figure()
     colors = {
         "micro_signal_bps": "#f6ad55",
@@ -331,13 +386,17 @@ def build_microstructure_figure(state_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def build_spread_figure(state_df: pd.DataFrame) -> go.Figure:
+def build_spread_figure(state_df: pd.DataFrame, pre_parsed: bool = False) -> go.Figure:
     """Half-spread bps vs inside spread bps."""
     if state_df.empty:
         return _empty_fig("Spread — en attente de données")
-    df = _parse_ts(state_df, "timestamp")
-    if df.empty:
-        return _empty_fig("Spread")
+    if pre_parsed:
+        df = state_df
+    else:
+        df = _parse_ts(state_df, "timestamp")
+        if df.empty:
+            return _empty_fig("Spread")
+        df = _downsample(df)
     fig = go.Figure()
     for col, color, name in [
         ("half_spread_bps", "#4fd1c5", "Half-spread (bps)"),
@@ -453,25 +512,24 @@ def build_book_table(book_df: pd.DataFrame) -> html.Div:
 
 
 def _format_fill_time(raw: object) -> str:
-    """Formate une heure de fill en HH:MM:SS.mmm (UTC).
+    """Formate une heure de fill en HH:MM:SS.mmm (heure locale du PC).
 
     Accepte soit une chaîne ISO8601 (`2026-04-20T13:42:17.309472+00:00`),
-    soit un ``datetime`` (du mode live mémoire où `time` est un dt natif).
+    soit un ``datetime`` (du mode live mémoire où `time` est un dt natif UTC).
+    Les deux sont convertis en **heure locale** pour l'affichage (plus naturel
+    que UTC pour l'utilisateur qui regarde son dashboard).
     Retourne une chaîne vide si le parsing échoue.
     """
     if raw is None or raw == "":
         return ""
-    # Cas datetime natif (mode live mémoire)
-    if hasattr(raw, "strftime"):
-        try:
-            return raw.strftime("%H:%M:%S.") + f"{raw.microsecond // 1000:03d}"
-        except Exception:
-            return str(raw)
-    # Cas string ISO (mode offline CSV)
-    ts = pd.to_datetime(raw, utc=True, errors="coerce", format="ISO8601")
+    ts = pd.to_datetime(raw, utc=True, errors="coerce")
     if pd.isna(ts):
         return str(raw)
-    return ts.strftime("%H:%M:%S.") + f"{ts.microsecond // 1000:03d}"
+    try:
+        local_ts = ts.tz_convert(_local_tz())
+    except Exception:
+        local_ts = ts
+    return local_ts.strftime("%H:%M:%S.") + f"{local_ts.microsecond // 1000:03d}"
 
 
 def build_fills_table(fills_df: pd.DataFrame, n: int = 15) -> html.Div:
@@ -593,16 +651,26 @@ def build_metric_cards(
 
 
 def build_header_status(state_df: pd.DataFrame) -> str:
-    """Date/heure de la dernière ligne d'état + nombre d'obs."""
+    """Heure locale de la dernière mise à jour + nombre d'obs.
+
+    Le timestamp stocké dans state.csv est en UTC (suffixe +00:00 / Z). On le
+    convertit en heure locale du PC pour l'affichage.
+    """
     if state_df.empty:
         return "Aucune donnée"
     last = _last_row(state_df)
-    ts = last.get("timestamp", "—")
-    if isinstance(ts, str):
-        ts_short = ts.split("+")[0].replace("T", " ")
-    else:
-        ts_short = str(ts)
-    return f"Dernière mise à jour : {ts_short}  ·  {len(state_df)} points d'état"
+    ts = last.get("timestamp")
+    if ts is None:
+        return f"{len(state_df)} points d'état"
+    ts_parsed = pd.to_datetime(ts, utc=True, errors="coerce", format="ISO8601")
+    if pd.isna(ts_parsed):
+        return f"{len(state_df)} points d'état"
+    try:
+        local = ts_parsed.tz_convert(_local_tz())
+    except Exception:
+        local = ts_parsed
+    ts_short = local.strftime("%H:%M:%S")
+    return f"Dernière mise à jour : {ts_short} (heure locale)  ·  {len(state_df)} points d'état"
 
 
 # ---------------------------------------------------------------------
@@ -657,61 +725,14 @@ def create_app(data_dir: Path, refresh_ms: int = 500, state_tail: int = 2000) ->
 # ---------------------------------------------------------------------
 # App — mode LIVE (lit la mémoire du feed)
 # ---------------------------------------------------------------------
-def _snapshot_to_state_df(app, history_cache: list[dict]) -> pd.DataFrame:
-    """Consomme `app.get_dashboard_snapshot()` et l'ajoute au cache d'historique.
-
-    Le dashboard a besoin de séries temporelles pour les graphes — on ne
-    peut pas tout tirer d'un seul snapshot (qui est un point dans le
-    temps). Donc on accumule les snapshots successifs dans un buffer
-    persistant côté serveur Dash.
-
-    Cache partagé entre les callbacks via une liste mutable injectée.
-    On garde maxlen derniers points pour éviter une fuite mémoire.
-    """
-    MAX_POINTS = 5000
-
-    snap = app.get_dashboard_snapshot(
-        levels=app.settings.top_levels_to_display,
-        trades=30,
-        spread_points=750,
-    )
-    portfolio = snap.get("portfolio", {}) or {}
-    micro = snap.get("microstructure", {}) or {}
-    ctx = snap.get("quote_context", {}) or {}
-    risk = snap.get("risk", {}) or {}
-
-    import datetime as _dt
-
-    row = {
-        "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-        "mid_price": snap.get("mid_price"),
-        "best_bid": snap.get("best_bid"),
-        "best_ask": snap.get("best_ask"),
-        "equity": portfolio.get("equity"),
-        "realized_pnl": portfolio.get("realized_pnl"),
-        "unrealized_pnl": portfolio.get("unrealized_pnl"),
-        "position_btc": portfolio.get("position_btc"),
-        "microprice": micro.get("microprice"),
-        "microprice_edge_bps": micro.get("microprice_edge_bps"),
-        "ofi_ewma": micro.get("ofi_ewma"),
-        "trade_flow_signed": micro.get("trade_flow_signed"),
-        "vpin": micro.get("vpin"),
-        "fast_vol_bps": micro.get("fast_vol_bps"),
-        "micro_signal_bps": micro.get("micro_signal_bps"),
-        "half_spread_bps": ctx.get("half_spread_bps"),
-        "rolling_inside_spread_bps": ctx.get("rolling_inside_spread_bps"),
-        "ewma_inside_spread_bps": ctx.get("ewma_inside_spread_bps"),
-        "toxicity_widening_bps": ctx.get("toxicity_widening_bps"),
-        "fast_vol_widening_bps": ctx.get("fast_vol_widening_bps"),
-        "health_score": risk.get("health_score"),
-        "loss_utilization": risk.get("loss_utilization"),
-        "risk_level": risk.get("risk_level"),
-    }
-    history_cache.append(row)
-    # Trim
-    if len(history_cache) > MAX_POINTS:
-        del history_cache[: len(history_cache) - MAX_POINTS]
-    return pd.DataFrame(history_cache)
+# Taille max du buffer d'historique côté serveur Dash.
+# - Le buffer grossit jusqu'à cette taille puis l'ancien est évincé (deque avec maxlen).
+# Nombre maximum de points conservés par trace côté navigateur.
+# Avec le pattern extendData, le serveur ne mémorise pas l'historique :
+# il n'envoie que le nouveau point à chaque tick. Cette limite est
+# uniquement appliquée côté navigateur par Plotly (éviction des plus
+# anciens). À 100 ms de refresh et 1500 points, on a ~2.5 min visibles.
+LIVE_HISTORY_MAX_POINTS = 1500
 
 
 def _snapshot_to_book_df(app) -> pd.DataFrame:
@@ -752,60 +773,385 @@ def _snapshot_to_fills_df(app) -> pd.DataFrame:
     return pd.DataFrame(executions)
 
 
+def _init_figure_equity() -> go.Figure:
+    """Figure initiale vide pour P&L. La structure des traces est fixée une
+    fois, les points arrivent ensuite via extendData."""
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(x=[], y=[], name="Realized P&L", line=dict(color="#68d391"))
+    )
+    fig.add_trace(
+        go.Scatter(x=[], y=[], name="Unrealized P&L", line=dict(color="#f6ad55"))
+    )
+    fig.update_layout(title="P&L (realized + unrealized)", **_PLOTLY_DARK_LAYOUT)
+    fig.update_yaxes(title="USD")
+    fig.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.3)")
+    return fig
+
+
+def _init_figure_position() -> go.Figure:
+    """Figure initiale vide pour position / mid."""
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(x=[], y=[], name="Position BTC", line=dict(color="#9f7aea"))
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[],
+            y=[],
+            name="Mid price",
+            yaxis="y2",
+            line=dict(color="#63b3ed", dash="dot"),
+        )
+    )
+    fig.update_layout(
+        title="Position BTC & Mid price",
+        yaxis=dict(title="BTC"),
+        yaxis2=dict(title="USD", overlaying="y", side="right", showgrid=False),
+        **_PLOTLY_DARK_LAYOUT,
+    )
+    return fig
+
+
+def _init_figure_microstructure() -> go.Figure:
+    """Figure initiale vide pour les signaux de microstructure."""
+    fig = go.Figure()
+    for name, color in [
+        ("micro_signal_bps", "#f6ad55"),
+        ("ofi_ewma", "#4fd1c5"),
+        ("vpin", "#fc8181"),
+        ("fast_vol_bps", "#b794f4"),
+    ]:
+        fig.add_trace(go.Scatter(x=[], y=[], name=name, line=dict(color=color)))
+    fig.update_layout(title="Signaux microstructure", **_PLOTLY_DARK_LAYOUT)
+    return fig
+
+
+def _init_figure_spread() -> go.Figure:
+    """Figure initiale vide pour spread et widening."""
+    fig = go.Figure()
+    for col, color, name in [
+        ("half_spread_bps", "#4fd1c5", "Half-spread (bps)"),
+        ("rolling_inside_spread_bps", "#a0aec0", "Inside spread mean (bps)"),
+        ("ewma_inside_spread_bps", "#cbd5e0", "Inside spread EWMA (bps)"),
+        ("toxicity_widening_bps", "#fc8181", "Toxicity widening"),
+        ("fast_vol_widening_bps", "#f6ad55", "Fast vol widening"),
+    ]:
+        fig.add_trace(go.Scatter(x=[], y=[], name=name, line=dict(color=color)))
+    fig.update_layout(title="Spread & widening", **_PLOTLY_DARK_LAYOUT)
+    fig.update_yaxes(title="bps")
+    return fig
+
+
+def _snapshot_row(feed_app) -> dict:
+    """Capture un point d'état en mémoire depuis le feed.
+
+    Les valeurs None sont laissées telles quelles : Plotly les affiche
+    comme des gaps dans les courbes, ce qui est le comportement attendu
+    quand la stratégie n'a pas encore produit le champ.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+
+    snap = feed_app.get_dashboard_snapshot(
+        levels=feed_app.settings.top_levels_to_display,
+        trades=30,
+        spread_points=50,
+    )
+    portfolio = snap.get("portfolio", {}) or {}
+    micro = snap.get("microstructure", {}) or {}
+    ctx = snap.get("quote_context", {}) or {}
+    risk = snap.get("risk", {}) or {}
+
+    now_utc = _dt.now(_tz.utc)
+    # Pour Plotly : timestamp en datetime local naïve (pas de tz_info)
+    # pour un rendu direct de l'heure locale sur l'axe X.
+    try:
+        ts_local = now_utc.astimezone(_local_tz()).replace(tzinfo=None)
+    except Exception:
+        ts_local = now_utc.replace(tzinfo=None)
+
+    return {
+        "ts_local": ts_local,
+        "ts_utc_iso": now_utc.isoformat(),
+        "mid_price": snap.get("mid_price"),
+        "best_bid": snap.get("best_bid"),
+        "best_ask": snap.get("best_ask"),
+        "equity": portfolio.get("equity"),
+        "realized_pnl": portfolio.get("realized_pnl"),
+        "unrealized_pnl": portfolio.get("unrealized_pnl"),
+        "position_btc": portfolio.get("position_btc"),
+        "microprice": micro.get("microprice"),
+        "ofi_ewma": micro.get("ofi_ewma"),
+        "vpin": micro.get("vpin"),
+        "fast_vol_bps": micro.get("fast_vol_bps"),
+        "micro_signal_bps": micro.get("micro_signal_bps"),
+        "half_spread_bps": ctx.get("half_spread_bps"),
+        "rolling_inside_spread_bps": ctx.get("rolling_inside_spread_bps"),
+        "ewma_inside_spread_bps": ctx.get("ewma_inside_spread_bps"),
+        "toxicity_widening_bps": ctx.get("toxicity_widening_bps"),
+        "fast_vol_widening_bps": ctx.get("fast_vol_widening_bps"),
+        "health_score": risk.get("health_score"),
+        "loss_utilization": risk.get("loss_utilization"),
+        "risk_level": risk.get("risk_level"),
+    }
+
+
 def create_live_app(feed_app, refresh_ms: int = 100) -> Dash:
-    """Crée l'application Dash en mode LIVE.
+    """Crée l'application Dash en mode live, lisant la mémoire du feed.
 
-    Le dashboard lit directement la mémoire du ``CoinbaseMarketDataApp``
-    passé en paramètre. À utiliser quand le feed et le dashboard tournent
-    dans le même process (cf. ``main.py --web-dashboard``).
+    Le dashboard utilise le pattern `extendData` de Plotly : les figures
+    sont initialisées une fois avec des traces vides, puis chaque tick
+    envoie uniquement les nouveaux points au navigateur, qui les append
+    localement. Coût réseau et rendu : constant par tick, indépendant
+    du nombre total de points accumulés.
 
-    Intérêts vs mode offline :
-    - pas de dépendance aux writers CSV (latence UI ~= refresh_ms) ;
-    - granularité 100 ms par défaut (vs 500 ms pour le mode offline) ;
-    - reflète instantanément un fill ou un changement de régime.
+    Trois callbacks distincts :
 
-    Contrainte : dashboard et feed vivent dans le même process. Si le
-    feed plante, le dashboard aussi. Pour visualiser un run terminé ou
-    isoler les deux, utiliser ``create_app(data_dir)``.
+    - ``update_charts`` : rythme rapide (refresh_ms), envoie un seul
+      point par trace pour les 4 graphes (P&L, position, microstructure,
+      spread). Utilise la propriété ``extendData`` des graphes.
+    - ``update_header_and_cards`` : rythme rapide, met à jour le header
+      et les 6 cartes métriques (peu coûteux).
+    - ``update_tables`` : rythme plus lent (``refresh_ms * 3``), met à
+      jour le carnet et la liste des fills. Les tables sont le poste le
+      plus coûteux par mise à jour.
+
+    Contrainte : le dashboard et le feed vivent dans le même process.
+    Pour visualiser un run terminé depuis les CSV, utiliser
+    ``create_app(data_dir)``.
     """
     app = Dash(__name__, title="Crypto MM — Live")
-    # Le layout ne dépend pas du data_dir en mode live, on passe un
-    # placeholder visible dans l'en-tête.
-    app.layout = build_layout(Path("<live memory>"), refresh_ms)
+    app.layout = _build_live_layout(refresh_ms)
 
-    # Cache persistant côté serveur Dash : conserve l'historique des
-    # snapshots successifs pour construire des séries temporelles.
-    # Note : closure sur une liste mutable — thread-safe sous Flask dev
-    # server (single-request handling par défaut).
-    history: list[dict] = []
+    # Nombre maximum de points conservés côté navigateur par trace.
+    # Le pattern extendData de Plotly prend ce paramètre en dernier
+    # argument ; au-delà, les points les plus anciens sont évincés.
+    # Le serveur lui-même ne mémorise rien (voir _snapshot_row).
+    max_pts_per_trace = LIVE_HISTORY_MAX_POINTS
+
+    @app.callback(
+        Output("equity-chart", "extendData"),
+        Output("position-chart", "extendData"),
+        Output("microstructure-chart", "extendData"),
+        Output("spread-chart", "extendData"),
+        Input("tick-fast", "n_intervals"),
+        prevent_initial_call=True,
+    )
+    def update_charts(_n: int):
+        row = _snapshot_row(feed_app)
+        ts = [row["ts_local"]]
+
+        # Format extendData : (dict, trace_indices, max_points)
+        # dict = {"x": [[xs_trace0], [xs_trace1], ...], "y": [[...], ...]}
+        equity_data = (
+            {"x": [ts, ts], "y": [[row["realized_pnl"]], [row["unrealized_pnl"]]]},
+            [0, 1],
+            max_pts_per_trace,
+        )
+        position_data = (
+            {"x": [ts, ts], "y": [[row["position_btc"]], [row["mid_price"]]]},
+            [0, 1],
+            max_pts_per_trace,
+        )
+        microstructure_data = (
+            {
+                "x": [ts, ts, ts, ts],
+                "y": [
+                    [row["micro_signal_bps"]],
+                    [row["ofi_ewma"]],
+                    [row["vpin"]],
+                    [row["fast_vol_bps"]],
+                ],
+            },
+            [0, 1, 2, 3],
+            max_pts_per_trace,
+        )
+        spread_data = (
+            {
+                "x": [ts, ts, ts, ts, ts],
+                "y": [
+                    [row["half_spread_bps"]],
+                    [row["rolling_inside_spread_bps"]],
+                    [row["ewma_inside_spread_bps"]],
+                    [row["toxicity_widening_bps"]],
+                    [row["fast_vol_widening_bps"]],
+                ],
+            },
+            [0, 1, 2, 3, 4],
+            max_pts_per_trace,
+        )
+        return equity_data, position_data, microstructure_data, spread_data
 
     @app.callback(
         Output("header-status", "children"),
         Output("metric-cards", "children"),
-        Output("equity-chart", "figure"),
-        Output("position-chart", "figure"),
-        Output("microstructure-chart", "figure"),
-        Output("spread-chart", "figure"),
+        Input("tick-fast", "n_intervals"),
+    )
+    def update_header_and_cards(_n: int):
+        row = _snapshot_row(feed_app)
+        return (
+            _build_header_status_live(row),
+            _build_metric_cards_live(row, feed_app),
+        )
+
+    @app.callback(
         Output("book-table", "children"),
         Output("fills-table", "children"),
-        Input("tick", "n_intervals"),
+        Input("tick-slow", "n_intervals"),
     )
-    def refresh(_n: int):
-        state_df = _snapshot_to_state_df(feed_app, history)
-        book_df = _snapshot_to_book_df(feed_app)
-        fills_df = _snapshot_to_fills_df(feed_app)
+    def update_tables(_n: int):
         return (
-            build_header_status(state_df),
-            build_metric_cards(state_df, fills_df),
-            build_equity_figure(state_df),
-            build_position_figure(state_df),
-            build_microstructure_figure(state_df),
-            build_spread_figure(state_df),
-            build_book_table(book_df),
-            build_fills_table(fills_df),
+            build_book_table(_snapshot_to_book_df(feed_app)),
+            build_fills_table(_snapshot_to_fills_df(feed_app)),
         )
 
     return app
+
+
+def _build_live_layout(refresh_ms: int) -> html.Div:
+    """Layout du mode live avec deux intervals (tables plus lentes)."""
+    slow_ms = max(refresh_ms * 3, 400)
+    return html.Div(
+        style=PAGE_STYLE,
+        children=[
+            dcc.Interval(id="tick-fast", interval=refresh_ms, n_intervals=0),
+            dcc.Interval(id="tick-slow", interval=slow_ms, n_intervals=0),
+            html.Div(
+                style={
+                    "display": "flex",
+                    "justifyContent": "space-between",
+                    "alignItems": "center",
+                },
+                children=[
+                    html.H1(
+                        "Crypto MM — Dashboard",
+                        style={
+                            "margin": 0,
+                            "fontSize": "1.6rem",
+                            "letterSpacing": "0.3px",
+                        },
+                    ),
+                    html.Div(
+                        id="header-status", style={"fontSize": "0.9rem", "opacity": 0.8}
+                    ),
+                ],
+            ),
+            html.Div(
+                f"Mode live · Rafraîchissement graphes : {refresh_ms} ms · tables : {slow_ms} ms",
+                style={
+                    "fontSize": "0.8rem",
+                    "opacity": 0.5,
+                    "marginTop": "4px",
+                    "marginBottom": "20px",
+                },
+            ),
+            html.Div(
+                id="metric-cards",
+                style={
+                    "display": "grid",
+                    "gridTemplateColumns": "repeat(6, 1fr)",
+                    "gap": "14px",
+                    "marginBottom": "20px",
+                },
+            ),
+            html.Div(
+                style={
+                    "display": "grid",
+                    "gridTemplateColumns": "1fr 1fr",
+                    "gap": "14px",
+                    "marginBottom": "20px",
+                },
+                children=[
+                    html.Div(
+                        dcc.Graph(id="equity-chart", figure=_init_figure_equity()),
+                        style=CARD_STYLE,
+                    ),
+                    html.Div(
+                        dcc.Graph(id="position-chart", figure=_init_figure_position()),
+                        style=CARD_STYLE,
+                    ),
+                ],
+            ),
+            html.Div(
+                style={
+                    "display": "grid",
+                    "gridTemplateColumns": "1fr 1fr",
+                    "gap": "14px",
+                    "marginBottom": "20px",
+                },
+                children=[
+                    html.Div(
+                        dcc.Graph(
+                            id="microstructure-chart",
+                            figure=_init_figure_microstructure(),
+                        ),
+                        style=CARD_STYLE,
+                    ),
+                    html.Div(
+                        dcc.Graph(id="spread-chart", figure=_init_figure_spread()),
+                        style=CARD_STYLE,
+                    ),
+                ],
+            ),
+            html.Div(
+                style={
+                    "display": "grid",
+                    "gridTemplateColumns": "1fr 1fr",
+                    "gap": "14px",
+                },
+                children=[
+                    html.Div(
+                        style=CARD_STYLE,
+                        children=[
+                            html.H3("Carnet d'ordres (top 10)", style={"marginTop": 0}),
+                            html.Div(id="book-table"),
+                        ],
+                    ),
+                    html.Div(
+                        style=CARD_STYLE,
+                        children=[
+                            html.H3("Fills récents", style={"marginTop": 0}),
+                            html.Div(id="fills-table"),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
+def _build_header_status_live(row: dict) -> str:
+    """Heure locale + indicateur vivant basé sur le dernier snapshot."""
+    ts_local = row.get("ts_local")
+    if ts_local is None:
+        return "En attente de données"
+    return f"Dernière mise à jour : {ts_local.strftime('%H:%M:%S')} (heure locale)"
+
+
+def _build_metric_cards_live(row: dict, feed_app) -> list[html.Div]:
+    """Cartes métriques construites directement depuis le dernier snapshot."""
+    equity = row.get("equity")
+    realized = row.get("realized_pnl")
+    unreal = row.get("unrealized_pnl")
+    position = row.get("position_btc")
+    mid = row.get("mid_price")
+    health = row.get("health_score")
+    loss_util = row.get("loss_utilization")
+    risk_level = row.get("risk_level") or "—"
+    n_fills = len(feed_app.strategy.executions)
+
+    return [
+        _metric_card(
+            "Equity",
+            _fmt_num(equity, 2),
+            f"{_fmt_money((equity or 0) - 1_000_000)} vs init",
+        ),
+        _metric_card("Realized P&L", _fmt_money(realized)),
+        _metric_card("Unrealized P&L", _fmt_money(unreal)),
+        _metric_card("Position BTC", _fmt_num(position, 6), f"mid {_fmt_num(mid, 2)}"),
+        _metric_card("Health score", _fmt_num(health, 0), f"risk {risk_level}"),
+        _metric_card("Loss util.", _fmt_pct(loss_util), f"{n_fills} fills au total"),
+    ]
 
 
 def run_live_server_threaded(
@@ -886,7 +1232,12 @@ def main() -> None:
     app = create_app(data_dir, refresh_ms=args.refresh_ms)
     print(f"[dash] Dashboard démarré sur http://{args.host}:{args.port}")
     print(f"[dash] Source : {data_dir.resolve()}  ·  Refresh : {args.refresh_ms} ms")
-    app.run(host=args.host, port=args.port, debug=args.debug)
+    app.run(
+        host=args.host,
+        port=args.port,
+        debug=args.debug,
+        dev_tools_silence_routes_logging=True,
+    )
 
 
 if __name__ == "__main__":

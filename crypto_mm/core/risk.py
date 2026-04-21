@@ -2,15 +2,16 @@ from __future__ import annotations
 
 
 class RiskManager:
-    """Gère les contraintes de risque de la simulation.
+    """Gère les contraintes de risque de la stratégie.
 
-    Contraintes imposées :
-    - exposition notionnelle max : $1,000,000
-    - perte max : $100,000 (10 % du capital initial)
+    Contraintes imposées par défaut :
 
-    Ce manager expose aussi un niveau de risque, des alertes, un health
-    score et des recommandations. Il centralise toute la logique de
-    "peut-on encore trader ?", "doit-on passer en reduce-only ?", etc.
+    - exposition notionnelle maximale : $1,000,000
+    - perte maximale : $100,000 (10 % du capital initial)
+
+    Expose également un niveau de risque, des alertes, un ``health_score``
+    agrégé et des recommandations de quoting (mode reduce-only, kill
+    switch).
     """
 
     def __init__(

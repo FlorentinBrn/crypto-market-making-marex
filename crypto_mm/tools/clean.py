@@ -1,3 +1,4 @@
+"""Outil de nettoyage : supprime les artefacts de run (CSV, caches)."""
 
 from __future__ import annotations
 import argparse, shutil

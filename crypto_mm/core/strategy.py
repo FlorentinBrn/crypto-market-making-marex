@@ -123,15 +123,8 @@ class MarketMaker:
         self.last_fill_ts_ms = 0.0
         self.last_quote_update_ts_ms = 0.0
 
-        # Accumulateurs pour vol et rolling spread.
-        # - _logret_* : sum / sum² des log-returns sur la fenêtre vol.
-        # - _last_mid_for_logret : dernier mid utilisé pour produire un
-        #   log-return (mis à jour à chaque update_quotes).
-        # - _logret_buffer : deque parallèle à mid_history pour pouvoir
-        #   retirer proprement les plus anciens log-returns quand la
-        #   fenêtre se remplit.
-        # - _inside_spread_sum : somme courante du rolling_spread_window,
-        #   maintenue incrémentalement.
+        # Accumulateurs en ligne pour la volatilité et la moyenne rolling
+        # du spread (évitent les recalculs O(N) à chaque update).
         self._logret_buffer: deque[float] = deque(maxlen=volatility_window)
         self._logret_sum: float = 0.0
         self._logret_sum2: float = 0.0

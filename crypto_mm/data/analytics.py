@@ -6,7 +6,7 @@ from pathlib import Path
 
 import matplotlib
 
-matplotlib.use("Agg")  # backend non interactif, sans dépendance écran.
+matplotlib.use("Agg")  # backend non interactif, sans serveur graphique.
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -27,17 +27,18 @@ class SpreadSummary:
 
 
 class SpreadTracker:
-    """Suit les spreads par taille + l'état microstructure complet.
+    """Suit les spreads par taille et maintient les signaux de microstructure.
 
-    Ce module concentre *tous* les signaux de microstructure :
-    - spread à la touch et VWAP par taille,
+    Ce module calcule et expose :
+
+    - spreads au touch et VWAP par taille de clip,
     - microprice et edge microprice / mid,
-    - imbalance L1/L3 et imbalance par volume,
-    - OFI instantané et OFI EWMA (Cont/Kukanov/Stoikov),
-    - trade-flow imbalance (pression agresseurs),
-    - VPIN-lite (toxicité),
-    - vol courte (EWMA sur log-returns mid),
-    - micro-signal combiné (edge de quoting recommandé en bps).
+    - imbalance L1 / L3 et imbalance pondérée par volume,
+    - OFI instantané et OFI EWMA (approche Cont / Kukanov / Stoikov),
+    - trade-flow imbalance (pression des agresseurs),
+    - VPIN-lite (indicateur de toxicité du flux),
+    - volatilité courte (EWMA sur log-returns du mid),
+    - micro-signal combiné exprimé en bps (edge de quoting recommandé).
 
     Le micro-signal combiné est exposé à la stratégie pour décaler le fair
     price et le skew.

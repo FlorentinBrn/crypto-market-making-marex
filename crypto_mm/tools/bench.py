@@ -1,24 +1,17 @@
 """Mesure de latence du chemin critique.
 
-Deux modes :
+Ce module propose deux usages :
 
-1. **Recorder en live** : `LatencyRecorder` est un hook léger que
-   `CoinbaseMarketDataApp` utilise pour mesurer le temps passé dans chaque
-   étape (parse JSON, apply book updates, compute signals, update_quotes,
-   on_trade, render dashboard). Les mesures sont stockées dans des deques
-   tournantes et écrites périodiquement en CSV. Coût runtime : ~1 µs par
-   mesure (`time.perf_counter_ns`) + append deque, à peu près invisible.
+1. ``LatencyRecorder`` : instrumente le handler WebSocket pour mesurer
+   le temps passé dans chaque étape (parse JSON, apply book updates,
+   compute signals, update_quotes, on_trade, render dashboard). Les
+   mesures sont stockées dans des deques tournantes et écrites
+   périodiquement en CSV. Coût runtime : appel à ``time.perf_counter_ns``
+   plus une insertion deque, négligeable.
 
-2. **Analyse offline** : `python -m crypto_mm.bench --data-dir data`
-   lit le CSV produit, imprime p50/p95/p99/max par étape, et génère un
-   PNG de la distribution.
-
-Utilisation :
-
-```bash
-python -m crypto_mm.main --bench-latency           # live avec recorder ON
-python -m crypto_mm.bench --data-dir data          # analyse post-run
-```
+2. Analyse post-run via ``python -m crypto_mm.tools.bench`` : lit le CSV
+   produit, calcule p50 / p95 / p99 / max par étape, et génère un graphe
+   de distribution.
 """
 
 from __future__ import annotations
@@ -34,7 +27,7 @@ from typing import Iterator
 # Nombre de mesures conservées en mémoire par étape avant flush.
 DEFAULT_BUFFER = 10_000
 
-# Étapes standard mesurées. On peut en ajouter dynamiquement.
+# Étapes mesurées dans le chemin critique.
 STAGE_PARSE = "parse_json"
 STAGE_APPLY_BOOK = "apply_book"
 STAGE_COMPUTE_SIGNALS = "compute_signals"

@@ -17,6 +17,7 @@ Règles :
 
 Le modèle suit l'agrégat devant nous, pas chaque ordre individuellement.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -30,7 +31,9 @@ class QueueState:
     queue_ahead_btc: float = 0.0
     my_size_btc: float = 0.0
 
-    def reset_to_new_quote(self, price: float, my_size: float, touch_depth: float) -> None:
+    def reset_to_new_quote(
+        self, price: float, my_size: float, touch_depth: float
+    ) -> None:
         """Nouvelle quote à un prix différent → on arrive en bout de queue.
 
         ``touch_depth`` est la taille affichée au prix correspondant dans le
@@ -107,7 +110,9 @@ class QueuePositionTracker:
         else:
             state.keep_place(size)
 
-    def on_trade(self, aggressor_side: str, trade_price: float, trade_size: float) -> float:
+    def on_trade(
+        self, aggressor_side: str, trade_price: float, trade_size: float
+    ) -> float:
         """Applique un trade et retourne la quantité fillée sur notre quote.
 
         ``aggressor_side`` : "SELL" si un vendeur agressif consomme des bids,

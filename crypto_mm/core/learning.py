@@ -44,7 +44,9 @@ class ContextualBanditQuoter:
         self.epsilon = epsilon
         self.inventory_penalty = inventory_penalty
         self.counts: dict[str, list[int]] = defaultdict(lambda: [0 for _ in self.arms])
-        self.values: dict[str, list[float]] = defaultdict(lambda: [0.0 for _ in self.arms])
+        self.values: dict[str, list[float]] = defaultdict(
+            lambda: [0.0 for _ in self.arms]
+        )
         self.last_decision: BanditDecision | None = None
         self.last_equity: float | None = None
         self.last_mid: float | None = None
@@ -65,12 +67,12 @@ class ContextualBanditQuoter:
         imb_bucket = (
             "buy_press"
             if imbalance_l3 >= 0.15
-            else "sell_press"
-            if imbalance_l3 <= -0.15
-            else "neutral"
+            else "sell_press" if imbalance_l3 <= -0.15 else "neutral"
         )
         inv_bucket = (
-            "long" if position_btc > 0.05 else "short" if position_btc < -0.05 else "flat"
+            "long"
+            if position_btc > 0.05
+            else "short" if position_btc < -0.05 else "flat"
         )
         risk_bucket = "stress" if loss_utilization >= 0.6 else "ok"
         return "|".join([vol_bucket, imb_bucket, inv_bucket, risk_bucket])

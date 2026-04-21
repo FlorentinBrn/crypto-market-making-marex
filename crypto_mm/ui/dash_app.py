@@ -500,15 +500,25 @@ def build_book_table(book_df: pd.DataFrame) -> html.Div:
             children=[
                 html.Div(
                     [
-                        html.Div("Qty", style={"color": "#555", "fontSize": "10px", **cell}),
-                        html.Div(f"{btc:.4f} BTC", style={"color": color, "fontWeight": "600", **cell}),
+                        html.Div(
+                            "Qty", style={"color": "#555", "fontSize": "10px", **cell}
+                        ),
+                        html.Div(
+                            f"{btc:.4f} BTC",
+                            style={"color": color, "fontWeight": "600", **cell},
+                        ),
                     ]
                 ),
                 html.Div(),
                 html.Div(
                     [
-                        html.Div("Total", style={"color": "#555", "fontSize": "10px", **cell}),
-                        html.Div(f"{usd:,.0f} USD", style={"color": color, "fontWeight": "600", **cell}),
+                        html.Div(
+                            "Total", style={"color": "#555", "fontSize": "10px", **cell}
+                        ),
+                        html.Div(
+                            f"{usd:,.0f} USD",
+                            style={"color": color, "fontWeight": "600", **cell},
+                        ),
                     ]
                 ),
             ],
@@ -567,7 +577,11 @@ def build_book_table(book_df: pd.DataFrame) -> html.Div:
 
     return html.Div(
         style={"overflowX": "hidden"},
-        children=[ask_summary, header] + ask_rows + [spread_row] + bid_rows + [bid_summary],
+        children=[ask_summary, header]
+        + ask_rows
+        + [spread_row]
+        + bid_rows
+        + [bid_summary],
     )
 
 
@@ -1315,6 +1329,7 @@ def main() -> None:
 
     if not args.no_open_browser:
         import threading, webbrowser
+
         threading.Timer(1.5, webbrowser.open, args=(url,)).start()
 
     app.run(

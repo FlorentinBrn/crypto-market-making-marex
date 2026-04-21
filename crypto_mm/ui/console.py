@@ -44,7 +44,9 @@ def _fmt_bps(value: float | None, sign: bool = False) -> str:
     return f"{value:.2f} bps"
 
 
-def _color_from_sign(value: float | None, *, positive: str = "green", negative: str = "red") -> str:
+def _color_from_sign(
+    value: float | None, *, positive: str = "green", negative: str = "red"
+) -> str:
     if value is None:
         return "white"
     if value > 0:
@@ -171,11 +173,20 @@ def _build_portfolio(snapshot: dict[str, Any]) -> Panel:
     unreal = portfolio.get("unrealized_pnl")
 
     rows = [
-        ("Position BTC", f"[{pos_style}]{pos:+.6f}[/{pos_style}]" if pos is not None else "-"),
+        (
+            "Position BTC",
+            f"[{pos_style}]{pos:+.6f}[/{pos_style}]" if pos is not None else "-",
+        ),
         ("Prix moyen", _fmt_price(portfolio.get("avg_entry_price"))),
         ("Exposition USD", _fmt_signed_usd(portfolio.get("exposure_usd"))),
-        ("Realized P&L", f"[{_color_from_sign(realized)}]{_fmt_signed_usd(realized)}[/{_color_from_sign(realized)}]"),
-        ("Unrealized P&L", f"[{_color_from_sign(unreal)}]{_fmt_signed_usd(unreal)}[/{_color_from_sign(unreal)}]"),
+        (
+            "Realized P&L",
+            f"[{_color_from_sign(realized)}]{_fmt_signed_usd(realized)}[/{_color_from_sign(realized)}]",
+        ),
+        (
+            "Unrealized P&L",
+            f"[{_color_from_sign(unreal)}]{_fmt_signed_usd(unreal)}[/{_color_from_sign(unreal)}]",
+        ),
         (
             "Equity",
             f"[{_color_from_sign((eq or 0) - 1_000_000, positive='green', negative='red')}]"
@@ -191,10 +202,34 @@ def _build_portfolio(snapshot: dict[str, Any]) -> Panel:
         ("Quote ask", _fmt_price(quotes.get("ask"))),
         ("Quote size", _fmt_qty(quotes.get("size"))),
         ("Microprice edge", _fmt_bps(micro.get("microprice_edge_bps"), sign=True)),
-        ("Imbalance L1", "-" if micro.get("imbalance_l1") is None else f"{micro['imbalance_l1']:+.3f}"),
-        ("Imbalance L3", "-" if micro.get("imbalance_l3") is None else f"{micro['imbalance_l3']:+.3f}"),
-        ("OFI EWMA", "-" if micro.get("ofi_ewma") is None else f"{micro['ofi_ewma']:+.2f}"),
-        ("Trade flow", "-" if micro.get("trade_flow_signed") is None else f"{micro['trade_flow_signed']:+.3f}"),
+        (
+            "Imbalance L1",
+            (
+                "-"
+                if micro.get("imbalance_l1") is None
+                else f"{micro['imbalance_l1']:+.3f}"
+            ),
+        ),
+        (
+            "Imbalance L3",
+            (
+                "-"
+                if micro.get("imbalance_l3") is None
+                else f"{micro['imbalance_l3']:+.3f}"
+            ),
+        ),
+        (
+            "OFI EWMA",
+            "-" if micro.get("ofi_ewma") is None else f"{micro['ofi_ewma']:+.2f}",
+        ),
+        (
+            "Trade flow",
+            (
+                "-"
+                if micro.get("trade_flow_signed") is None
+                else f"{micro['trade_flow_signed']:+.3f}"
+            ),
+        ),
         ("VPIN", "-" if micro.get("vpin") is None else f"{micro['vpin']:.3f}"),
         ("Fast vol", _fmt_bps(micro.get("fast_vol_bps"))),
         ("Micro signal", _fmt_bps(micro.get("micro_signal_bps"), sign=True)),
@@ -214,7 +249,11 @@ def _build_portfolio(snapshot: dict[str, Any]) -> Panel:
                 ("Bandit state", str(quote_ctx.get("bandit_state", "-"))),
                 (
                     "Bandit reward",
-                    "-" if quote_ctx.get("bandit_reward") is None else f"{quote_ctx['bandit_reward']:+.2f}",
+                    (
+                        "-"
+                        if quote_ctx.get("bandit_reward") is None
+                        else f"{quote_ctx['bandit_reward']:+.2f}"
+                    ),
                 ),
             ]
         )
@@ -235,7 +274,9 @@ def _build_portfolio(snapshot: dict[str, Any]) -> Panel:
     return Panel(Group(*extras), title="Portefeuille / Risque", border_style="green")
 
 
-def _build_trade_table(rows: list[dict[str, Any]], title: str, *, show_reason: bool = False) -> Panel:
+def _build_trade_table(
+    rows: list[dict[str, Any]], title: str, *, show_reason: bool = False
+) -> Panel:
     table = Table(expand=True, box=None, pad_edge=False)
     table.add_column("Heure", style="white", no_wrap=True)
     table.add_column("Side", justify="center")
@@ -250,7 +291,9 @@ def _build_trade_table(rows: list[dict[str, Any]], title: str, *, show_reason: b
             try:
                 time_str = format_local_time(parse_timestamp(raw_time))
             except Exception:
-                time_str = raw_time.split("T")[-1][:12] if "T" in raw_time else raw_time[:12]
+                time_str = (
+                    raw_time.split("T")[-1][:12] if "T" in raw_time else raw_time[:12]
+                )
         else:
             time_str = str(raw_time or "")[:12]
         side = str(row.get("side", "-"))
@@ -295,16 +338,29 @@ def build_dashboard(snapshot: dict[str, Any]) -> Layout:
     layout["header"].update(_build_header(snapshot))
     layout["orderbook"].update(_build_orderbook(snapshot))
     layout["spreads"].update(_build_spreads(snapshot))
-    layout["trades"].update(_build_trade_table(snapshot.get("recent_trades", []), "Trades marché"))
+    layout["trades"].update(
+        _build_trade_table(snapshot.get("recent_trades", []), "Trades marché")
+    )
     layout["fills"].update(
-        _build_trade_table(snapshot.get("executions", []), "Exécutions simulées", show_reason=True)
+        _build_trade_table(
+            snapshot.get("executions", []), "Exécutions simulées", show_reason=True
+        )
     )
 
     footer_cols = Columns(
         [
-            Panel(f"Best bid\n[bold green]{_fmt_price(snapshot.get('best_bid'))}[/bold green]", border_style="green"),
-            Panel(f"Best ask\n[bold red]{_fmt_price(snapshot.get('best_ask'))}[/bold red]", border_style="red"),
-            Panel(f"Mid\n[bold cyan]{_fmt_price(snapshot.get('mid_price'))}[/bold cyan]", border_style="cyan"),
+            Panel(
+                f"Best bid\n[bold green]{_fmt_price(snapshot.get('best_bid'))}[/bold green]",
+                border_style="green",
+            ),
+            Panel(
+                f"Best ask\n[bold red]{_fmt_price(snapshot.get('best_ask'))}[/bold red]",
+                border_style="red",
+            ),
+            Panel(
+                f"Mid\n[bold cyan]{_fmt_price(snapshot.get('mid_price'))}[/bold cyan]",
+                border_style="cyan",
+            ),
         ],
         expand=True,
     )

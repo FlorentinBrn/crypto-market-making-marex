@@ -1,4 +1,5 @@
 """Graphes post-run à partir des CSV : P&L, position, spread, signaux."""
+
 from __future__ import annotations
 
 import argparse

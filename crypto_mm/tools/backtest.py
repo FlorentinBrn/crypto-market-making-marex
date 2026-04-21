@@ -195,7 +195,9 @@ def replay_with_book(
     equity_rows: list[dict] = []
     fill_events: list[dict] = []  # infos riches par fill pour les métriques MM
     trades_encountered = 0
-    trades_touching_quote = 0  # le prix nous aurait touché (sans tenir compte de la queue)
+    trades_touching_quote = (
+        0  # le prix nous aurait touché (sans tenir compte de la queue)
+    )
     trades_filling_us = 0  # nous avons vraiment été rempli (au moins en partie)
     reduce_only_ticks = 0
     total_ticks = 0
@@ -325,8 +327,10 @@ def replay_with_book(
                     # Vérifie le risque avant d'exécuter.
                     if aggressor == "SELL" and mm.current_bid is not None:
                         if mm.risk_manager.can_execute_fill(
-                            mm.position_btc, filled_qty,
-                            mm.current_bid.price, mm.last_equity,
+                            mm.position_btc,
+                            filled_qty,
+                            mm.current_bid.price,
+                            mm.last_equity,
                         ):
                             fill = mm._execute_buy(trade, filled_qty)
                             mm.last_fill_ts_ms = now_ms
@@ -338,8 +342,10 @@ def replay_with_book(
                             )
                     elif aggressor == "BUY" and mm.current_ask is not None:
                         if mm.risk_manager.can_execute_fill(
-                            mm.position_btc, -filled_qty,
-                            mm.current_ask.price, mm.last_equity,
+                            mm.position_btc,
+                            -filled_qty,
+                            mm.current_ask.price,
+                            mm.last_equity,
                         ):
                             fill = mm._execute_sell(trade, filled_qty)
                             mm.last_fill_ts_ms = now_ms
@@ -451,10 +457,7 @@ def _mm_metrics_from_fill_events(
         )
         out["edge_weighted_bps"] = float(weighted_edge)
     # Edge × notional → USD capturés (en théorie, à la marge du fill).
-    captured = [
-        e * p * s / 10_000.0
-        for e, p, s in zip(edges, prices, sizes)
-    ]
+    captured = [e * p * s / 10_000.0 for e, p, s in zip(edges, prices, sizes)]
     out["spread_captured_usd"] = float(sum(captured))
     out["inventory_turnover_btc"] = float(sum(sizes))
 
@@ -778,9 +781,7 @@ def plot_walkforward(
         axes[0].set_xlabel("Fold")
         axes[1].bar(
             results_df["fold"],
-            results_df.get(
-                "edge_weighted_bps", pd.Series([0] * len(results_df))
-            ),
+            results_df.get("edge_weighted_bps", pd.Series([0] * len(results_df))),
         )
         axes[1].set_title("Edge pondéré (bps)")
         axes[1].set_xlabel("Fold")

@@ -217,7 +217,7 @@ def build_layout(data_dir: Path, refresh_ms: int) -> html.Div:
                     html.Div(
                         style=CARD_STYLE,
                         children=[
-                            html.H3("Carnet d'ordres (top 10)", style={"marginTop": 0}),
+                            html.H3("Order Book", style={"marginTop": 0}),
                             html.Div(id="book-table"),
                         ],
                     ),
@@ -417,98 +417,157 @@ def build_spread_figure(state_df: pd.DataFrame, pre_parsed: bool = False) -> go.
     return fig
 
 
+def _fmt_qty(qty: float) -> str:
+    """Format quantity: 1234567 → '1.23M', 12345 → '12.3k', 1.5 → '1.5000'."""
+    if qty >= 1_000_000:
+        return f"{qty / 1_000_000:.2f}M"
+    if qty >= 1_000:
+        return f"{qty / 1_000:.1f}k"
+    return f"{qty:.4f}"
+
+
 def build_book_table(book_df: pd.DataFrame) -> html.Div:
-    """Dernier snapshot du carnet : top 10 bids et asks."""
+    """Orderbook DOM-style : asks en haut (inversées), bids en bas, barres de volume."""
     if book_df.empty or "timestamp" not in book_df.columns:
         return html.Div("En attente de données...", style={"opacity": 0.6})
-    # Dernier timestamp présent
+
     last_ts = book_df["timestamp"].iloc[-1]
     last = book_df[book_df["timestamp"] == last_ts]
     bids = last[last["side"] == "bid"].sort_values("rank").head(10)
     asks = last[last["side"] == "ask"].sort_values("rank").head(10)
 
-    def make_rows(df: pd.DataFrame, color: str) -> list:
-        rows = []
-        for _, r in df.iterrows():
-            rows.append(
-                html.Tr(
-                    [
-                        html.Td(
-                            f"{r['price']:,.2f}",
-                            style={"color": color, "textAlign": "right"},
-                        ),
-                        html.Td(
-                            f"{r['quantity']:.6f}",
-                            style={"color": color, "textAlign": "right"},
-                        ),
-                    ]
-                )
-            )
-        return rows
+    if bids.empty and asks.empty:
+        return html.Div("Données insuffisantes", style={"opacity": 0.6})
 
-    return html.Table(
-        style={"width": "100%", "borderCollapse": "collapse"},
-        children=[
-            html.Thead(
-                html.Tr(
+    max_qty = max(
+        bids["quantity"].max() if not bids.empty else 0,
+        asks["quantity"].max() if not asks.empty else 0,
+    )
+
+    def book_row(price: float, qty: float, side: str) -> html.Div:
+        color = "#fc8181" if side == "ask" else "#68d391"
+        bar_rgba = (
+            "rgba(252,129,129,0.18)" if side == "ask" else "rgba(104,211,145,0.18)"
+        )
+        pct = min(100.0, (qty / max_qty * 100)) if max_qty > 0 else 0
+        # Bar grows from right for asks, from right for bids (DOM convention)
+        bg = f"linear-gradient(to left, {bar_rgba} {pct:.1f}%, transparent {pct:.1f}%)"
+        amount_usd = price * qty
+        return html.Div(
+            style={
+                "position": "relative",
+                "display": "grid",
+                "gridTemplateColumns": "2fr 2fr 2fr",
+                "background": bg,
+                "padding": "1px 8px",
+                "fontSize": "12px",
+                "lineHeight": "1.7",
+                "fontFamily": "monospace",
+            },
+            children=[
+                html.Span(
+                    _fmt_qty(qty),
+                    style={"color": color, "textAlign": "right", "opacity": 0.85},
+                ),
+                html.Span(
+                    f"{price:,.2f}",
+                    style={"color": color, "textAlign": "center", "fontWeight": "600"},
+                ),
+                html.Span(
+                    _fmt_qty(amount_usd),
+                    style={"color": color, "textAlign": "right"},
+                ),
+            ],
+        )
+
+    # Totaux ask / bid
+    ask_btc = asks["quantity"].sum() if not asks.empty else 0.0
+    ask_usd = (asks["price"] * asks["quantity"]).sum() if not asks.empty else 0.0
+    bid_btc = bids["quantity"].sum() if not bids.empty else 0.0
+    bid_usd = (bids["price"] * bids["quantity"]).sum() if not bids.empty else 0.0
+
+    def _summary_bar(btc: float, usd: float, side: str) -> html.Div:
+        color = "#fc8181" if side == "ask" else "#68d391"
+        cell = {"textAlign": "center", "fontFamily": "monospace"}
+        return html.Div(
+            style={
+                "display": "grid",
+                "gridTemplateColumns": "2fr 2fr 2fr",
+                "padding": "5px 8px",
+                "fontSize": "13px",
+                "background": "rgba(255,255,255,0.03)",
+            },
+            children=[
+                html.Div(
                     [
-                        html.Th(
-                            "BID Px", style={"textAlign": "right", "color": "#68d391"}
-                        ),
-                        html.Th(
-                            "BID Qty", style={"textAlign": "right", "color": "#68d391"}
-                        ),
-                        html.Th(
-                            "ASK Px", style={"textAlign": "right", "color": "#fc8181"}
-                        ),
-                        html.Th(
-                            "ASK Qty", style={"textAlign": "right", "color": "#fc8181"}
-                        ),
+                        html.Div("Qty", style={"color": "#555", "fontSize": "10px", **cell}),
+                        html.Div(f"{btc:.4f} BTC", style={"color": color, "fontWeight": "600", **cell}),
                     ]
-                )
-            ),
-            html.Tbody(
-                [
-                    html.Tr(
-                        [
-                            html.Td(
-                                (
-                                    f"{bids.iloc[i]['price']:,.2f}"
-                                    if i < len(bids)
-                                    else ""
-                                ),
-                                style={"textAlign": "right", "color": "#68d391"},
-                            ),
-                            html.Td(
-                                (
-                                    f"{bids.iloc[i]['quantity']:.6f}"
-                                    if i < len(bids)
-                                    else ""
-                                ),
-                                style={"textAlign": "right", "color": "#68d391"},
-                            ),
-                            html.Td(
-                                (
-                                    f"{asks.iloc[i]['price']:,.2f}"
-                                    if i < len(asks)
-                                    else ""
-                                ),
-                                style={"textAlign": "right", "color": "#fc8181"},
-                            ),
-                            html.Td(
-                                (
-                                    f"{asks.iloc[i]['quantity']:.6f}"
-                                    if i < len(asks)
-                                    else ""
-                                ),
-                                style={"textAlign": "right", "color": "#fc8181"},
-                            ),
-                        ]
-                    )
-                    for i in range(max(len(bids), len(asks)))
-                ]
-            ),
+                ),
+                html.Div(),
+                html.Div(
+                    [
+                        html.Div("Total", style={"color": "#555", "fontSize": "10px", **cell}),
+                        html.Div(f"{usd:,.0f} USD", style={"color": color, "fontWeight": "600", **cell}),
+                    ]
+                ),
+            ],
+        )
+
+    ask_summary = _summary_bar(ask_btc, ask_usd, "ask")
+    bid_summary = _summary_bar(bid_btc, bid_usd, "bid")
+
+    # Header colonnes
+    header = html.Div(
+        style={
+            "display": "grid",
+            "gridTemplateColumns": "2fr 2fr 2fr",
+            "padding": "4px 8px 3px",
+            "fontSize": "11px",
+            "color": "#555",
+            "borderBottom": "1px solid #2a2a3a",
+            "fontFamily": "monospace",
+        },
+        children=[
+            html.Span("Market Size", style={"textAlign": "right"}),
+            html.Span("Price", style={"textAlign": "center"}),
+            html.Span("Amount (USD)", style={"textAlign": "right"}),
         ],
+    )
+
+    # Asks : du pire au meilleur (best ask en bas, juste au-dessus du spread)
+    ask_rows = [
+        book_row(r["price"], r["quantity"], "ask")
+        for _, r in asks.iloc[::-1].iterrows()
+    ]
+
+    # Spread separator
+    if not bids.empty and not asks.empty:
+        spread = asks.iloc[0]["price"] - bids.iloc[0]["price"]
+        spread_label = f"Spread  {spread:,.4f}"
+    else:
+        spread_label = "Spread  —"
+
+    spread_row = html.Div(
+        spread_label,
+        style={
+            "textAlign": "center",
+            "padding": "3px 8px",
+            "fontSize": "11px",
+            "color": "#888",
+            "background": "rgba(255,255,255,0.04)",
+            "borderTop": "1px solid #2a2a3a",
+            "borderBottom": "1px solid #2a2a3a",
+            "fontFamily": "monospace",
+        },
+    )
+
+    # Bids : du meilleur au pire (best bid en haut, juste sous le spread)
+    bid_rows = [book_row(r["price"], r["quantity"], "bid") for _, r in bids.iterrows()]
+
+    return html.Div(
+        style={"overflowX": "hidden"},
+        children=[ask_summary, header] + ask_rows + [spread_row] + bid_rows + [bid_summary],
     )
 
 
@@ -1104,7 +1163,7 @@ def _build_live_layout(refresh_ms: int) -> html.Div:
                     html.Div(
                         style=CARD_STYLE,
                         children=[
-                            html.H3("Carnet d'ordres (top 10)", style={"marginTop": 0}),
+                            html.H3("Order Book", style={"marginTop": 0}),
                             html.Div(id="book-table"),
                         ],
                     ),
@@ -1160,6 +1219,7 @@ def run_live_server_threaded(
     host: str = "127.0.0.1",
     port: int = 8050,
     refresh_ms: int = 100,
+    open_browser: bool = True,
 ) -> threading.Thread:
     """Lance le dashboard Dash live dans un thread daemon.
 
@@ -1167,6 +1227,7 @@ def run_live_server_threaded(
     le process principal puisqu'il est daemon.
     """
     import threading
+    import webbrowser
 
     dash_app = create_live_app(feed_app, refresh_ms=refresh_ms)
 
@@ -1183,6 +1244,12 @@ def run_live_server_threaded(
 
     t = threading.Thread(target=_serve, name="dash-live-server", daemon=True)
     t.start()
+
+    if open_browser:
+        url = f"http://{host}:{port}"
+        # Petit délai pour laisser le serveur Flask démarrer avant d'ouvrir le navigateur.
+        threading.Timer(1.5, webbrowser.open, args=(url,)).start()
+
     return t
 
 
@@ -1227,6 +1294,11 @@ def main() -> None:
         action="store_true",
         help="Active le mode debug Dash (hot reload).",
     )
+    parser.add_argument(
+        "--no-open-browser",
+        action="store_true",
+        help="Ne pas ouvrir le navigateur automatiquement au démarrage.",
+    )
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -1237,8 +1309,14 @@ def main() -> None:
         data_dir.mkdir(parents=True, exist_ok=True)
 
     app = create_app(data_dir, refresh_ms=args.refresh_ms)
-    print(f"[dash] Dashboard démarré sur http://{args.host}:{args.port}")
+    url = f"http://{args.host}:{args.port}"
+    print(f"[dash] Dashboard démarré sur {url}")
     print(f"[dash] Source : {data_dir.resolve()}  ·  Refresh : {args.refresh_ms} ms")
+
+    if not args.no_open_browser:
+        import threading, webbrowser
+        threading.Timer(1.5, webbrowser.open, args=(url,)).start()
+
     app.run(
         host=args.host,
         port=args.port,

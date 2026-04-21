@@ -24,13 +24,13 @@ The codebase aims to be readable, testable, and extensible rather than overly op
 
 ![Dash web dashboard](docs/images/dash_dashboard.png)
 
-*The Dash-based web dashboard at `http://localhost:8050`. Two modes are supported: **live** (started with `--web-dashboard` alongside the live feed, reads feed memory directly, ~250 ms UI latency) and **offline** (standalone, reads CSV files). Renders P&L (realized + unrealized), position, microstructure signals, spread dynamics, order book depth, and recent fills.*
+*The Dash-based web dashboard at `http://localhost:8050`. Two modes are supported: **live** (started with `--web-dashboard` alongside the live feed, reads feed memory directly, ~250 ms UI latency) and **offline** (standalone, reads CSV files). Renders P&L (realized + unrealized), position, microstructure signals, spread dynamics, a DOM-style order book (asks above / bids below with volume bars and BTC + USD depth totals), and recent fills. The browser opens automatically on startup.*
 
 ### Backtest walk-forward results
 
 ![Walk-forward results](docs/images/walkforward_results.png)
 
-*Metrics per fold from `python -m crypto_mm.tools.backtest`: final P&L, max drawdown, Calmar, fill rate (real vs naive), queue drag, average edge in bps, weighted edge in bps, spread captured in USD, average holding time, P&L per round-trip, inventory turnover.*
+*Metrics per fold from `python -m crypto_mm.tools.backtest`: final P&L, max drawdown, fill rate, queue drag, average edge in bps, weighted edge in bps, spread captured in USD, average holding time, P&L per round-trip, inventory turnover.*
 
 ### Stress scenarios summary
 
@@ -156,10 +156,9 @@ The web dashboard supports **two modes**:
 
 ```bash
 python -m crypto_mm.main --web-dashboard
-# Then open http://localhost:8050
 ```
 
-Optional flags: `--web-port 9000`, `--web-host 0.0.0.0`, `--web-refresh-ms 200`.
+The browser opens automatically at `http://localhost:8050`. Optional flags: `--web-port 9000`, `--web-host 0.0.0.0`, `--web-refresh-ms 200`.
 
 **Offline mode** (for completed runs, or when feed and dashboard run in separate processes):
 
@@ -169,10 +168,9 @@ python -m crypto_mm.main
 
 # In terminal 2:
 python -m crypto_mm.ui.dash_app --data-dir data
-# Then open http://localhost:8050
 ```
 
-Offline mode reads the CSV files and refreshes every 1 s by default.
+Offline mode reads the CSV files, refreshes every 1 s by default, and also opens the browser automatically. Pass `--no-open-browser` to disable.
 
 ### Run backtests on stored data
 

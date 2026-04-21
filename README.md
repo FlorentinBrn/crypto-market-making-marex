@@ -24,7 +24,7 @@ The codebase aims to be readable, testable, and extensible rather than overly op
 
 ![Dash web dashboard](docs/images/dash_dashboard.png)
 
-*The Dash-based web dashboard at `http://localhost:8050`. Two modes are supported: **live** (started with `--web-dashboard` alongside the live feed, reads feed memory directly, ~100 ms UI latency) and **offline** (standalone, reads CSV files). Renders P&L (realized + unrealized), position, microstructure signals, spread dynamics, order book depth, and recent fills.*
+*The Dash-based web dashboard at `http://localhost:8050`. Two modes are supported: **live** (started with `--web-dashboard` alongside the live feed, reads feed memory directly, ~250 ms UI latency) and **offline** (standalone, reads CSV files). Renders P&L (realized + unrealized), position, microstructure signals, spread dynamics, order book depth, and recent fills.*
 
 ### Backtest walk-forward results
 
@@ -152,7 +152,7 @@ python -m crypto_mm.main --bench-latency
 
 The web dashboard supports **two modes**:
 
-**Live mode** (recommended for active monitoring — ~100 ms UI latency, reads feed memory directly):
+**Live mode** (recommended for active monitoring — ~250 ms UI latency, reads feed memory directly):
 
 ```bash
 python -m crypto_mm.main --web-dashboard
@@ -210,8 +210,6 @@ python -m crypto_mm.tools.analyze --data-dir data
 
 ```bash
 python -m crypto_mm.tools.clean
-# or the installed console script:
-crypto-mm-clean
 ```
 
 ---
@@ -331,4 +329,3 @@ In particular, it does **not** claim to provide:
 - Monte Carlo stress scenario generator
 - experiment tracking for parameter sweeps
 - WebSocket auto-reconnect with gap replay
-- Prometheus metrics endpoint

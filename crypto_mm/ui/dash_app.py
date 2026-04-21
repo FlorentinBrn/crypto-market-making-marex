@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import threading
 from typing import Any
 
 import pandas as pd
@@ -1159,7 +1160,7 @@ def run_live_server_threaded(
     host: str = "127.0.0.1",
     port: int = 8050,
     refresh_ms: int = 100,
-) -> "threading.Thread":
+) -> threading.Thread:
     """Lance le dashboard Dash live dans un thread daemon.
 
     Retourne le thread (qui tourne indéfiniment). Le thread mourra avec
@@ -1172,7 +1173,13 @@ def run_live_server_threaded(
     def _serve() -> None:
         # `use_reloader=False` impératif dans un thread non-principal.
         # `debug=False` pour éviter le hot-reload.
-        dash_app.run(host=host, port=port, debug=False, use_reloader=False)
+        dash_app.run(
+            host=host,
+            port=port,
+            debug=False,
+            use_reloader=False,
+            dev_tools_silence_routes_logging=True,
+        )
 
     t = threading.Thread(target=_serve, name="dash-live-server", daemon=True)
     t.start()
